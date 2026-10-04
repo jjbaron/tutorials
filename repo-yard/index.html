@@ -72,6 +72,22 @@ button{font:inherit;color:inherit}
 .icon-btn svg{width:14px;height:14px}
 .seg{display:flex;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px}
 .seg button{border:0;background:none;padding:4px 9px;border-radius:6px;cursor:pointer;color:var(--muted);font-weight:600;font-size:12px}
+.lbl-bay.compact .b-meta{display:none}
+.view-seg button{font-size:12.5px;padding:5px 12px}
+.lbl-bay .b-name{font-family:var(--font-mono);font-weight:600;font-size:10.5px}
+.pods-tbl td.st{white-space:nowrap}
+.rollout{display:grid;gap:5px;padding:9px 11px;border-radius:10px;background:var(--surface-2);margin-bottom:8px;cursor:pointer;border:0;width:100%;text-align:left}
+.rollout:hover{background:var(--surface-3)}
+.rollout .r-top{display:flex;justify-content:space-between;gap:8px;font-weight:600;font-size:12.5px}
+.rollout .r-sub{font-family:var(--font-mono);font-size:11px;color:var(--muted);word-break:break-all}
+.rollout .progress i{background:var(--accent)}
+.rollout.stuck .progress i{background:var(--crit)}
+.k8s-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
+.k8s-row:first-of-type{border-top:0}
+.k8s-row .kr-env{font-weight:600;font-size:12.5px}
+.k8s-row .kr-sub{grid-column:1/-1;font-size:11.5px;color:var(--muted)}
+.attn{display:flex;gap:8px;align-items:baseline;font-size:12px;padding:5px 0}
+.attn .mono{font-size:11px;word-break:break-all}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.12)}
 .clock{display:flex;align-items:center;gap:7px;font-family:var(--font-mono);font-weight:600;color:var(--ok);background:var(--ok-soft);padding:5px 10px;border-radius:999px;font-size:12px}
 .clock .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:blink 1.6s infinite}
@@ -358,6 +374,10 @@ button{font:inherit;color:inherit}
         <path d="M10 19c0-4 12-1 12-5" stroke="var(--surface)" stroke-width="1.6" fill="none"/>
       </svg>
       <span class="brand-name">Repo Yard</span>
+    </div>
+    <div class="seg view-seg" id="view-seg" role="group" aria-label="View">
+      <button data-action="view-code" aria-pressed="true">Code</button>
+      <button data-action="view-k8s" aria-pressed="false">Kubernetes</button>
     </div>
     <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
     <div class="top-right">
@@ -718,7 +738,8 @@ const state = {
   repos: [], byId: {}, commits: new Map(), feed: [],
   view: { mode: 'repo', repoId: 'payments-api' },
   layer: 'structure', showConflicts: true, townColor: 'ci', showPipes: true,
-  selectedSha: null, focusBranch: null, hoverBranch: null, hoverFile: null
+  selectedSha: null, focusBranch: null, hoverBranch: null, hoverFile: null,
+  k8sLayout: 'deployment', k8sEnv: 'prod', selectedDep: null, hoverPod: null
 };
 const timers = [];
 const after = (min, fn) => timers.push({ at: sim.now + min, fn });
@@ -896,10 +917,10 @@ function pickReviewers(repo, author) {
   return shuffle(pool).slice(0, 2).map(p => ({ p, s: 'pending' }));
 }
 function addFeed(o) {
-  const item = Object.assign({ id: Math.random().toString(36).slice(2), t: sim.now }, o, { repo: o.repo.id });
+  const item = Object.assign({ id: Math.random().toString(36).slice(2), t: sim.now }, o, { repo: o.repo ? o.repo.id : (o.label || 'cluster') });
   state.feed.unshift(item);
   if (state.feed.length > 80) state.feed.pop();
-  emit('feed', o.repo, item);
+  emit('feed', o.repo || null, item);
 }
 const nm = id => `<b>${esc(firstName(id))}</b>`;
 const code = s => `<code>${esc(s)}</code>`;
@@ -1031,11 +1052,7 @@ function startMainBuild(repo, c) {
     if (pass) {
       c.image = `${repo.id}:sha-${c.sha}`;
       addFeed({ repo, icon: 'build', cls: 'ok', html: `${ciLabel(repo, id)} passed on ${code('main')} · image ${code('sha-' + c.sha)} published`, sha: c.sha });
-      after(rnd(1, 2.5), () => {
-        c.staging = sim.now;
-        addFeed({ repo, icon: 'deploy', cls: 'accent', html: `Deployed ${code('sha-' + c.sha)} to staging`, sha: c.sha });
-        emit('deploy', repo, { commit: c });
-      });
+      deployStaging(repo, c);
     } else {
       addFeed({ repo, icon: 'fail', cls: 'crit', html: `${ciLabel(repo, id)} failed on ${code('main')} · retrying`, sha: c.sha });
       emit('toast', repo, { cls: 'crit', title: `main is red in ${repo.id}`, body: `${esc(ciLabel(repo, id))} failed after merging #${c.pr}. Retrying the build.` });
@@ -1052,12 +1069,13 @@ function doRelease(repo, manual) {
   const minor = ready.some(c => /^(Add|Partial|Passkey|Apple|Split|Batch|Combobox|Open|Route|Expose|Track|Lazy|Propagate)/.test(c.msg));
   const v = bumpVersion(repo.version, minor ? 'minor' : 'patch');
   repo.version = v;
-  for (const c of ready) { c.prod = sim.now; c.prodVersion = v; }
+  for (const c of ready) c.prodVersion = v;
   repo.staged = repo.staged.filter(s => !ready.includes(state.commits.get(s)));
   repo.lastRelease = sim.now;
-  addFeed({ repo, icon: 'release', cls: 'ok', html: `Released ${code(repo.id + ' ' + v)} to production · ${ready.length} change${ready.length > 1 ? 's' : ''}` });
-  emit('toast', repo, { cls: 'ok', title: `${repo.id} ${v} is live`, body: `${ready.length} merged change${ready.length > 1 ? 's' : ''} shipped to production.` });
+  addFeed({ repo, icon: 'release', cls: 'ok', html: `Released ${code(repo.id + ' ' + v)} · ${ready.length} change${ready.length > 1 ? 's' : ''} heading to production` });
+  emit('toast', repo, { cls: 'ok', title: `${repo.id} ${v} released`, body: `${ready.length} merged change${ready.length > 1 ? 's are' : ' is'} rolling out to production.` });
   emit('release', repo, { count: ready.length, version: v });
+  deployProd(repo, ready, v);
   return true;
 }
 
@@ -1148,7 +1166,227 @@ function simTick(dtMin) {
   const k = Math.exp(-dtMin / 90);
   for (const r of state.repos) for (const f of r.files) f.heat *= k;
   for (let i = timers.length - 1; i >= 0; i--) if (timers[i].at <= sim.now) { const t = timers.splice(i, 1)[0]; t.fn(); }
+  k8sTick();
   if (sim.now >= sim.nextEventAt) { fireEvent(); sim.nextEventAt = sim.now + rnd(1.3, 3); }
+}
+/* ================================================================
+   Kubernetes model: clusters, nodes, deployments, pods
+   ================================================================ */
+const K8S_ENVS = [
+  { id: 'staging', name: 'staging', cluster: 'eks-staging-us-east-1', nodes: ['ip-10-1-0-14', 'ip-10-1-1-52', 'ip-10-1-2-37'] },
+  { id: 'prod', name: 'production', cluster: 'eks-prod-us-east-1', nodes: ['ip-10-0-0-21', 'ip-10-0-0-88', 'ip-10-0-1-17', 'ip-10-0-1-140', 'ip-10-0-2-63', 'ip-10-0-2-201'] }
+];
+// name, namespace, repo, prod replicas/HPA range, staging replicas, fixed image tag for third-party
+const K8S_DEPS = [
+  ['payments-api', 'payments', 'payments-api', { r: 6, min: 4, max: 10 }, 2],
+  ['checkout-web', 'storefront', 'checkout-web', { r: 6, min: 4, max: 10 }, 2],
+  ['inventory-svc', 'fulfillment', 'inventory-svc', { r: 4, min: 3, max: 8 }, 2],
+  ['auth-service', 'identity', 'auth-service', { r: 4, min: 3, max: 8 }, 2],
+  ['data-pipeline-worker', 'data', 'data-pipeline', { r: 3 }, 1],
+  ['ingress-nginx', 'platform', null, { r: 3 }, 1, '1.11.2'],
+  ['otel-collector', 'platform', null, { r: 2 }, 1, '0.104.0']
+];
+const SLOTS = 12;
+const k8s = { envs: {}, deps: [], nodes: {}, pods: new Map(), dirty: true, nextAt: 0, draining: null };
+const POD_CHARS = 'bcdfghjklmnpqrstvwxz2456789';
+function hashStr(s) { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function podName(dep, version) {
+  const rs = (hashStr(dep.id + version).toString(36) + 'f7c9d').slice(0, 9).replace(/[aeiou]/g, 'c');
+  let sfx = ''; for (let i = 0; i < 5; i++) sfx += POD_CHARS[Math.floor(Math.random() * POD_CHARS.length)];
+  return `${dep.name}-${rs}-${sfx}`;
+}
+const envName = env => env === 'prod' ? 'production' : 'staging';
+const depFor = (env, repoId) => k8s.deps.find(d => d.env === env && d.repo === repoId);
+const nodesOf = env => k8s.envs[env].nodes.map(n => k8s.nodes[n]);
+function podsOn(name) { let n = 0; for (const p of k8s.pods.values()) if (p.node === name) n++; return n; }
+function pickNode(env) {
+  const ns = nodesOf(env).filter(n => !n.cordoned).sort((a, b) => podsOn(a.name) - podsOn(b.name));
+  return ns.length && podsOn(ns[0].name) < SLOTS ? ns[0].name : null;
+}
+function newPod(dep, version, status) {
+  const node = pickNode(dep.env);
+  const p = { id: podName(dep, version), dep, version, status: node ? status : 'Pending', node, restarts: 0, born: sim.now, statusAt: sim.now };
+  k8s.pods.set(p.id, p); dep.pods.push(p); k8s.dirty = true;
+  return p;
+}
+function removePod(p) { if (!k8s.pods.has(p.id)) return; k8s.pods.delete(p.id); p.dep.pods.splice(p.dep.pods.indexOf(p), 1); k8s.dirty = true; }
+function setStatus(p, s) { p.status = s; p.statusAt = sim.now; k8s.dirty = true; ui.dirty = true; }
+const readyCount = dep => dep.pods.filter(p => p.status === 'Running').length;
+function depStatus(dep) {
+  if (dep.pods.some(p => p.status === 'CrashLoopBackOff')) return 'Degraded';
+  if (dep.rollout) return 'Progressing';
+  if (readyCount(dep) < dep.desired) return 'Scaling';
+  return 'Available';
+}
+const DEP_STATUS_CLS = { Available: 'ok', Progressing: 'accent', Scaling: 'accent', Degraded: 'crit' };
+const repoOf = dep => dep.repo ? state.byId[dep.repo] : null;
+const kfeed = (dep, o) => addFeed(Object.assign({ repo: repoOf(dep), label: dep.name }, o));
+
+function buildK8s() {
+  for (const e of K8S_ENVS) {
+    k8s.envs[e.id] = e;
+    e.nodes.forEach((n, i) => { k8s.nodes[n] = { name: n, env: e.id, cordoned: false, zone: 'us-east-1' + 'abc'[i % 3] }; });
+  }
+  for (const [name, ns, repoId, prod, stagingR, fixed] of K8S_DEPS) {
+    for (const env of ['staging', 'prod']) {
+      const repo = repoId && state.byId[repoId];
+      let version = fixed;
+      if (repo && env === 'prod') version = repo.version;
+      if (repo && env === 'staging') {
+        const deployed = repo.log.map(s => state.commits.get(s)).filter(c => c.kind === 'merge' && c.staging).sort((a, b) => b.t - a.t)[0];
+        version = deployed ? (deployed.image && deployed.image.includes(':sha-') ? 'sha-' + deployed.sha : repo.version) : repo.version;
+      }
+      const r = env === 'prod' ? prod.r : stagingR;
+      const dep = { id: `${env}/${name}`, env, name, ns, repo: repoId, desired: r, hpa: env === 'prod' && !!prod.max, min: prod.min || r, max: prod.max || r,
+        version, rollout: null, cpu: rnd(.45, .7, seeded), pods: [] };
+      k8s.deps.push(dep);
+      for (let i = 0; i < r; i++) {
+        const p = newPod(dep, version, 'Running');
+        p.born = sim.now - rint(40, 3 * DAY, seeded);
+        p.restarts = seeded() < .15 ? rint(1, 3, seeded) : 0;
+      }
+    }
+  }
+  k8s.nextAt = sim.now + 2;
+}
+
+/* ---------- rollouts: surge one new pod, wait for ready, retire one old pod ---------- */
+function k8sRollout(dep, version, onDone, opts = {}) {
+  if (dep.version === version && !dep.rollout) { if (onDone) onDone(); return; }
+  if (dep.rollout) { Object.assign(dep.rollout, { target: version, onDone, stalled: false, bad: false }); stepRollout(dep); return; }
+  dep.rollout = { target: version, from: dep.version, started: sim.now, onDone, bad: !opts.safe && dep.env === 'staging' && Math.random() < .14 };
+  kfeed(dep, { icon: 'rollout', cls: 'accent', html: `Rolling out ${code(dep.name + ':' + version)} to ${envName(dep.env)} · ${dep.desired} pods` });
+  emit('k8s', repoOf(dep), { rolloutStart: dep });
+  stepRollout(dep);
+}
+function stepRollout(dep) {
+  const R = dep.rollout; if (!R || R.stalled) return;
+  if (dep.pods.some(p => p.version === R.target && (p.status === 'ContainerCreating' || p.status === 'Pending'))) return;
+  const old = dep.pods.filter(p => p.version !== R.target && p.status !== 'Terminating');
+  const fresh = dep.pods.filter(p => p.version === R.target && p.status === 'Running').length;
+  if (!old.length && fresh >= dep.desired) return finishRollout(dep);
+  const p = newPod(dep, R.target, 'ContainerCreating');
+  scheduleReady(dep, p, old[0]);
+}
+function scheduleReady(dep, p, replace) {
+  after(rnd(.6, 1.3), () => {
+    if (!k8s.pods.has(p.id)) return;
+    const R = dep.rollout;
+    if (R && R.bad && p.version === R.target) {
+      setStatus(p, 'CrashLoopBackOff'); p.restarts = 1; R.stalled = true;
+      kfeed(dep, { icon: 'fail', cls: 'crit', html: `Pod ${code(p.id)} is in CrashLoopBackOff: readiness probe failing on /healthz` });
+      emit('toast', repoOf(dep), { cls: 'crit', title: `Rollout stuck: ${dep.name} on ${envName(dep.env)}`, body: `New pods for <span class="mono">${esc(R.target)}</span> keep crashing. Old pods are still serving traffic.` });
+      const tick = () => { if (k8s.pods.has(p.id) && p.status === 'CrashLoopBackOff') { p.restarts++; k8s.dirty = true; after(1.2, tick); } };
+      after(1.2, tick);
+      after(rnd(4, 6), () => rollback(dep, R));
+      return;
+    }
+    setStatus(p, 'Running');
+    if (replace && k8s.pods.has(replace.id)) { setStatus(replace, 'Terminating'); after(.5, () => { removePod(replace); stepRollout(dep); }); }
+    else stepRollout(dep);
+  });
+}
+function finishRollout(dep) {
+  const R = dep.rollout;
+  dep.version = R.target; dep.rollout = null;
+  kfeed(dep, { icon: 'deploy', cls: 'ok', html: `Rollout complete: ${code(dep.name + ':' + R.target)} on ${envName(dep.env)}, ${readyCount(dep)}/${dep.desired} pods ready` });
+  if (R.onDone) R.onDone();
+  emit('k8s', repoOf(dep), { rolloutDone: dep });
+}
+function rollback(dep, R) {
+  if (dep.rollout !== R) return;
+  dep.rollout = null;
+  for (const p of dep.pods.filter(x => x.version === R.target)) { setStatus(p, 'Terminating'); after(.5, () => removePod(p)); }
+  kfeed(dep, { icon: 'rollback', cls: 'crit', html: `Rollout of ${code(dep.name + ':' + R.target)} exceeded its progress deadline. Rolled back to ${code(dep.version)}` });
+  ensureReplicas(dep);
+  emit('k8s', repoOf(dep), { rollback: dep });
+  // someone fixes the config and retries
+  const onDone = R.onDone;
+  after(rnd(7, 11), () => {
+    if (dep.rollout || dep.version === R.target) return;
+    kfeed(dep, { icon: 'sync', cls: '', html: `Fixed the readiness probe config for ${code(dep.name)} and retried the rollout` });
+    k8sRollout(dep, R.target, onDone, { safe: true });
+  });
+}
+function ensureReplicas(dep) {
+  const live = dep.pods.filter(p => p.status !== 'Terminating').length;
+  for (let i = live; i < dep.desired; i++) {
+    const p = newPod(dep, dep.version, 'ContainerCreating');
+    after(rnd(.5, 1), () => { if (k8s.pods.has(p.id)) setStatus(p, 'Running'); });
+  }
+}
+
+/* ---------- cluster events: autoscaling, restarts, node maintenance ---------- */
+function hpaEvent() {
+  const dep = pick(k8s.deps.filter(d => d.hpa && !d.rollout));
+  if (!dep) return false;
+  dep.cpu = clamp(dep.cpu + (.6 - dep.cpu) * .3 + rnd(-.2, .26), .22, .97);
+  const want = clamp(Math.ceil(dep.desired * dep.cpu / .6), dep.min, dep.max);
+  if (want === dep.desired) return false;
+  const from = dep.desired; dep.desired = want;
+  if (want > from) {
+    for (let i = from; i < want; i++) { const p = newPod(dep, dep.version, 'ContainerCreating'); after(rnd(.6, 1.4), () => { if (k8s.pods.has(p.id)) setStatus(p, 'Running'); }); }
+  } else {
+    const victims = dep.pods.filter(p => p.status === 'Running').sort((a, b) => b.born - a.born).slice(0, from - want);
+    for (const p of victims) { setStatus(p, 'Terminating'); after(.6, () => removePod(p)); }
+  }
+  kfeed(dep, { icon: 'scale', cls: 'accent', html: `Autoscaler moved ${code(dep.name)} from ${from} to ${want} pods (CPU ${Math.round(dep.cpu * 100)}% of request)` });
+  return true;
+}
+function restartEvent() {
+  const p = pick([...k8s.pods.values()].filter(x => x.status === 'Running' && x.dep.env === 'prod' && !x.dep.rollout));
+  if (!p) return false;
+  setStatus(p, 'CrashLoopBackOff'); p.restarts++;
+  kfeed(p.dep, { icon: 'fail', cls: 'warn', html: `Pod ${code(p.id)} was OOMKilled and is restarting (restarts: ${p.restarts})` });
+  after(rnd(2, 3.5), () => { if (k8s.pods.has(p.id) && p.status === 'CrashLoopBackOff') setStatus(p, 'Running'); });
+  return true;
+}
+function drainEvent() {
+  if (k8s.draining) return false;
+  const node = pick(nodesOf('prod').filter(n => !n.cordoned));
+  if (!node) return false;
+  const pods = [...k8s.pods.values()].filter(p => p.node === node.name && p.status === 'Running');
+  if (!pods.length) return false;
+  node.cordoned = true; k8s.draining = node.name; k8s.dirty = true;
+  addFeed({ label: 'cluster', icon: 'trash', cls: 'warn', html: `Draining node ${code(node.name)} for kernel patching · ${pods.length} pods to reschedule` });
+  let k = 0;
+  const next = () => {
+    const p = pods[k++];
+    if (!p) {
+      after(rnd(8, 14), () => { node.cordoned = false; k8s.draining = null; k8s.dirty = true; addFeed({ label: 'cluster', icon: 'approve', cls: 'ok', html: `Node ${code(node.name)} patched and schedulable again` }); });
+      return;
+    }
+    if (!k8s.pods.has(p.id) || p.status !== 'Running') return next();
+    const r = newPod(p.dep, p.version, 'ContainerCreating');
+    after(rnd(.5, 1), () => { if (k8s.pods.has(r.id)) setStatus(r, 'Running'); if (k8s.pods.has(p.id)) { setStatus(p, 'Terminating'); after(.4, () => removePod(p)); } next(); });
+  };
+  next();
+  return true;
+}
+function k8sTick() {
+  if (sim.now < k8s.nextAt) return;
+  k8s.nextAt = sim.now + rnd(2.2, 4.5);
+  const x = Math.random();
+  if (x < .5) hpaEvent(); else if (x < .75) restartEvent(); else if (x < .87) drainEvent();
+}
+
+/* ---------- hooks used by the build/release flow ---------- */
+function deployStaging(repo, c) {
+  const dep = depFor('staging', repo.id);
+  const mark = () => {
+    for (const sha of repo.staged) { const x = state.commits.get(sha); if (!x.staging && x.t <= c.t && x.build && x.build.status === 'passed') x.staging = sim.now; }
+    if (!c.staging) c.staging = sim.now;
+    if (!dep) addFeed({ repo, icon: 'deploy', cls: 'accent', html: `Deployed ${code('sha-' + c.sha)} to staging`, sha: c.sha });
+    emit('deploy', repo, { commit: c });
+  };
+  if (!dep) { after(rnd(1, 2.5), mark); return; }
+  after(rnd(.5, 1.2), () => k8sRollout(dep, 'sha-' + c.sha, mark));
+}
+function deployProd(repo, commits, version) {
+  const dep = depFor('prod', repo.id);
+  const mark = () => { for (const c of commits) c.prod = sim.now; emit('deploy', repo, {}); };
+  if (!dep) { mark(); return; }
+  k8sRollout(dep, version, mark);
 }
 /* ================================================================
    3D core
@@ -1179,7 +1417,7 @@ const world = new THREE.Group(); scene.add(world);
 const PAL = {
   light: { bg: 0xe8ecf0, ground: 0xe0e5ea, lot: 0xf2f4f7, road: 0xcad2da, roadMark: 0xf5f7f9, plate: 0xf3f5f8, file: 0xf7f9fb, pad: 0xd5dbe2, padRelease: 0xcbd7f3,
     scaffold: 0x6c7a8c, hl: 0x2853c7, tether: 0x9aa5b2, strained: 0xc28a0e, spark: 0xec6a18, weed: 0x67a956, cloud: 0xffffff, cloudOp: .62,
-    hemiSky: 0xffffff, hemiGround: 0xb2bdc9, hemiI: .92, sunI: .7, windowLit: 0xffbe4d, winI: .45, facade: '#f3f5f8', win: '#c9d2dc', winLit: '#ffcf70', roof: 0xdde3e9,
+    hemiSky: 0xffffff, hemiGround: 0xa9b4c1, hemiI: .66, sunI: .52, windowLit: 0xffbe4d, winI: .45, facade: '#f3f5f8', win: '#c9d2dc', winLit: '#ffcf70', roof: 0xdde3e9,
     ok: 0x15875a, crit: 0xc93636, run: 0x2853c7, jenkins: 0xb04f29, newci: 0x0d817e, heat: [0xeef1f4, 0xf6d27c, 0xec8a2c, 0xc8342b], hotLo: 0xeef1f4, hotMid: 0xf0a24a, hotHi: 0xc62f2f,
     unowned: 0xc3cad2, truck: 0xfafbfc, cargo: 0x2853c7, crate: 0xc99c5c, pallet: 0xb48a57, pipe: 0xa4afbb, smoke: 0xffffff, wheel: 0x2b3440, crane: 0xe0a41c,
     tints: ['#dce5fa', '#f6dde7', '#d7ede1', '#e8def6', '#f5e5cd', '#d4e9f3', '#f3dbd3', '#e2e9cf', '#e6e1ee'] },
@@ -1239,8 +1477,8 @@ function updateLabels() {
     if (!show) { if (!L.hidden) { L.el.style.display = 'none'; L.hidden = true; } continue; }
     if (L.hidden) { L.el.style.display = ''; L.hidden = false; }
     const x = (_v.x + 1) / 2 * w, y = (1 - _v.y) / 2 * h;
-    const ax = L.anchor === 'left' ? '0' : '-50%';
-    L.el.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(${ax},-100%)`;
+    const ax = L.anchor === 'left' ? '0' : '-50%', ay = L.anchor === 'below' ? '4px' : '-100%';
+    L.el.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(${ax},${ay})`;
   }
 }
 
@@ -1260,14 +1498,17 @@ function updateCamera(dt) {
 }
 function contentRadius() {
   if (state.view.mode === 'town') return 70;
+  if (state.view.mode === 'cluster') return KS ? Math.max(KS.extent.w / 2 / Math.max(1, aspectNow() / 1.25), KS.extent.d / 2) + 4 : 60;
   if (!RS) return 60;
   return Math.max(RS.campus.hx, RS.campus.hz) + 26;
 }
+function aspectNow() { return Math.max(.4, stageEl.clientWidth / Math.max(1, stageEl.clientHeight)); }
 function defaultView(fromAbove) {
   const aspect = Math.max(.4, stageEl.clientWidth / Math.max(1, stageEl.clientHeight));
   const R = contentRadius();
-  const fit = R / Math.tan(THREE.MathUtils.degToRad(15)) * (aspect >= 1.25 ? .78 : .78 * 1.6 / aspect);
-  const v = { target: state.view.mode === 'town' ? new THREE.Vector3(-2, 0, -7) : new THREE.Vector3(4, 0, -6), r: clamp(fit, 60, 520), theta: .62, phi: .92 };
+  const fit = R / Math.tan(THREE.MathUtils.degToRad(15)) * (aspect >= 1.25 ? .78 : .78 * (state.view.mode === 'cluster' ? 1.2 : 1.6) / aspect);
+  const kc = state.view.mode === 'cluster';
+  const v = { target: state.view.mode === 'town' ? new THREE.Vector3(-2, 0, -7) : kc ? new THREE.Vector3(0, 0, -3) : new THREE.Vector3(4, 0, -6), r: clamp(fit, 60, 520), theta: kc ? .16 : .62, phi: kc ? .78 : .92 };
   goal.target.copy(v.target); goal.r = v.r; goal.theta = v.theta; goal.phi = v.phi;
   if (fromAbove) { cam.target.copy(v.target); cam.r = v.r * 1.6; cam.theta = v.theta - .5; cam.phi = .55; }
 }
@@ -1347,7 +1588,7 @@ const fileHeight = f => .7 + Math.sqrt(f.loc) / 6.6;
 
 function buildRepoScene(repo) {
   clearAll();
-  TS = null;
+  TS = null; KS = null;
   RS = { repo, fileMesh: {}, fileTop: {}, sites: {}, hold: 0, dirty: false, lastRebuild: 0, rings: [] };
   buildCampus(repo);
   buildStage(repo);
@@ -1780,7 +2021,7 @@ function townLabelHtml(repo) {
 }
 function buildTownScene() {
   clearAll();
-  RS = null; TS = { bld: {} };
+  RS = null; KS = null; TS = { bld: {} };
   const g = layer('town');
   for (const v of [-48, -16, 16, 48]) {
     const r1 = box(6.5, .1, 108, M(P.road), false); r1.position.set(v, .05, 0); g.add(r1);
@@ -1881,6 +2122,7 @@ function setHover(d) {
   const prevB = state.hoverBranch, prevF = state.hoverFile;
   state.hoverBranch = d && (d.kind === 'branch') ? d.name : null;
   state.hoverFile = d && d.kind === 'file' ? d.id : null;
+  state.hoverPod = d && d.kind === 'pod' ? d.id : null;
   if (prevB !== state.hoverBranch || prevF !== state.hoverFile) applyHighlights();
   canvas.classList.toggle('pointer', !!d && d.kind !== 'district');
   if (!d) { tipEl.hidden = true; return; }
@@ -1924,12 +2166,219 @@ function tipHtml(d) {
     const cr = collisions(r).filter(c => !c.stale).length;
     return `<h4>${esc(r.id)}</h4>${row('Stack', esc(r.lang))}${row('Team', TEAMS[r.team].name)}${row('CI', r.ci === 'jenkins' ? 'Jenkins' : 'New CI/CD')}${row('In production', 'v' + r.version)}${row('Active branches (lit windows)', r.branches.filter(isActive).length)}${row('Open PRs', openPrs(r).length)}${row('Commits, last hour (smoke)', commitsSince(r, 60))}${row('Staged for release', r.staged.length)}${cr ? `<div class="t-note safety">${cr} conflict risk${cr > 1 ? 's' : ''} between open branches</div>` : ''}<div class="t-note">Click to open the repo.</div>`;
   }
+  if (d.kind === 'pod') return podTipHtml(d.id);
+  if (d.kind === 'bay') return bayTipHtml(d.key);
   if (d.kind === 'pipe') {
     const L = state.byId[d.lib], C = state.byId[d.consumer];
     const behind = cmpVer(C.deps[L.id], L.version) < 0;
     return `<h4>${esc(L.id)} → ${esc(C.id)}</h4>${row('Latest release', L.version)}${row(`${esc(C.id)} uses`, C.deps[L.id])}<div class="t-note ${behind ? 'safety' : ''}">${behind ? 'Needs a version bump.' : 'Up to date.'}</div>`;
   }
   return '';
+}
+/* ================================================================
+   Kubernetes view: clusters as platforms, deployments (or nodes) as
+   container bays, every pod a shipping container
+   ================================================================ */
+let KS = null;
+const POD_W = 1.75, POD_H = 1.4, POD_D = 3.05, SLOT_X = 2.35, SLOT_Z = 3.65;
+const BAY_W = 4 * SLOT_X + 1.2, BAY_D = 3 * SLOT_Z + 1.3, BAY_GX = 3, BAY_GZ = 6.5;
+const KPAL = {
+  light: { cur: 0x3566d6, old: 0x9aa5b2, crash: 0xd23b3b, pending: 0xb7c0ca, gantry: 0xe0a41c, cordon: 0xe0a41c },
+  dark: { cur: 0x5f86f5, old: 0x56637a, crash: 0xff5a5a, pending: 0x3d4858, gantry: 0xe0a41c, cordon: 0xe0a41c }
+};
+const kp = () => KPAL[isDark() ? 'dark' : 'light'];
+
+function clusterGroups(env) {
+  if (state.k8sLayout === 'node') return nodesOf(env).map(n => ({ key: 'node:' + n.name, kind: 'node', node: n }));
+  return k8s.deps.filter(d => d.env === env).map(d => ({ key: 'dep:' + d.id, kind: 'dep', dep: d }));
+}
+function groupPods(g) {
+  const arr = g.kind === 'node' ? [...k8s.pods.values()].filter(p => p.node === g.node.name) : g.dep.pods.slice();
+  return arr.sort((a, b) => a.born - b.born || (a.id < b.id ? -1 : 1));
+}
+function bayLabelHtml(g) {
+  if (g.kind === 'node') {
+    const n = podsOn(g.node.name);
+    const pct = Math.round(n / SLOTS * 100);
+    return `<div class="b-name">${esc(g.node.name)}</div><div class="b-meta"><span class="num">${n}/${SLOTS} pods</span><span>${esc(g.node.zone)}</span>${g.node.cordoned ? '<span class="pill warn">cordoned · draining</span>' : `<span class="pill ${pct > 80 ? 'warn' : ''}">${pct}% full</span>`}</div>`;
+  }
+  const d = g.dep, st = depStatus(d);
+  const ver = d.rollout ? `${esc(d.version)} → ${esc(d.rollout.target)}` : esc(d.version);
+  return `<div class="b-name">${esc(d.name)}</div><div class="b-meta"><span class="num">${readyCount(d)}/${d.desired} ready</span><span class="mono">${ver}</span><span class="pill ${DEP_STATUS_CLS[st]}">${st}</span></div>`;
+}
+
+function buildClusterScene() {
+  clearAll();
+  RS = null; TS = null;
+  KS = { mesh: new Map(), bays: {}, envs: {}, slot: new Map() };
+  const g = layer('kstatic');
+  const envs = state.k8sEnv === 'both' ? ['staging', 'prod'] : [state.k8sEnv];
+  const both = envs.length > 1;
+  const dims = {};
+  for (const env of envs) {
+    const n = clusterGroups(env).length, cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(n * 1.6)))), rows = Math.ceil(n / cols);
+    const slotRows = state.k8sLayout === 'deployment' && env === 'staging' ? 1 : 3;
+    const bd = slotRows * SLOT_Z + 1.3;
+    dims[env] = { cols, rows, slotRows, bd, w: cols * (BAY_W + BAY_GX) + 6, d: rows * (bd + BAY_GZ) + 6 };
+  }
+  const aspect = stageEl.clientWidth / Math.max(1, stageEl.clientHeight);
+  const side = aspect > 1.15, road = 14;
+  const pos = {};
+  if (!both) {
+    const D = dims[envs[0]];
+    pos[envs[0]] = { x: 0, z: 0 };
+    KS.extent = { w: D.w, d: D.d };
+  } else if (side) {
+    const tw = dims.staging.w + road + dims.prod.w;
+    pos.staging = { x: -tw / 2 + dims.staging.w / 2, z: -(dims.prod.d - dims.staging.d) / 2 };
+    pos.prod = { x: tw / 2 - dims.prod.w / 2, z: 0 };
+    KS.extent = { w: tw, d: Math.max(dims.staging.d, dims.prod.d) };
+  } else {
+    const td = dims.staging.d + road + dims.prod.d;
+    pos.staging = { x: 0, z: -td / 2 + dims.staging.d / 2 };
+    pos.prod = { x: 0, z: td / 2 - dims.prod.d / 2 };
+    KS.extent = { w: Math.max(dims.staging.w, dims.prod.w), d: td };
+  }
+  KS.side = side;
+  for (const env of envs) {
+    const D = dims[env], { x: cx, z: cz } = pos[env];
+    const plat = box(D.w, .6, D.d, M(isDark() ? P.plate : 0xcdd5de)); plat.position.set(cx, .3, cz); g.add(plat);
+    const e = k8s.envs[env];
+    KS.envs[env] = { x: cx, z: cz, ...D };
+    addLabel(`${envName(env)}<span>${esc(e.cluster)} · ${e.nodes.length} nodes</span>`, new THREE.Vector3(cx - D.w / 2 + 1, .7, cz + D.d / 2 + .2), 'kstatic', 'lbl-card lbl-main', { anchor: 'left' });
+    clusterGroups(env).forEach((grp, i) => {
+      const c = i % D.cols, r = Math.floor(i / D.cols);
+      const x = cx - D.w / 2 + 3 + (BAY_W + BAY_GX) * (c + .5), z = cz - D.d / 2 + 2 + (D.bd + BAY_GZ) * r + D.bd / 2;
+      let tint;
+      if (grp.kind === 'dep') { tint = new THREE.Color(P.tints[Object.keys(TEAMS).indexOf(grp.dep.ns) % P.tints.length]); if (!isDark()) tint.offsetHSL(0, .1, -.03); }
+      else tint = new THREE.Color(isDark() ? P.pad : 0xf6f8fa);
+      const pad = box(BAY_W, .25, D.bd, M(tint)); pad.position.set(x, .72, z);
+      g.add(pickable(pad, { layer: 'kstatic', kind: 'bay', key: grp.key }));
+      const bay = { grp, x, z, d: D.bd, rows: D.slotRows, pad };
+      if (grp.kind === 'node') {
+        // cordon tape posts, shown while the node drains
+        const tape = new THREE.Group();
+        const tm = M(kp().cordon);
+        for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const post = cyl(.12, .12, 1.6, tm, 6); post.position.set(x + sx * BAY_W / 2, 1.6, z + sz * D.bd / 2); tape.add(post); }
+        for (const [a, b] of [[[-1, -1], [1, -1]], [[1, -1], [1, 1]], [[1, 1], [-1, 1]], [[-1, 1], [-1, -1]]]) {
+          const vert = a[0] === b[0];
+          const bar = box(vert ? .08 : BAY_W, .16, vert ? D.bd : .08, tm, false);
+          bar.position.set(x + (a[0] + b[0]) / 4 * BAY_W, 2.2, z + (a[1] + b[1]) / 4 * D.bd); tape.add(bar);
+        }
+        g.add(tape); bay.tape = tape;
+      } else {
+        // gantry crane that sweeps the bay during a rollout
+        const gm = M(kp().gantry);
+        const gan = new THREE.Group();
+        const l1 = box(.3, 4.6, .3, gm), l2 = box(.3, 4.6, .3, gm), beam = box(BAY_W + .8, .35, .5, gm);
+        l1.position.set(-BAY_W / 2 - .4, 2.3, 0); l2.position.set(BAY_W / 2 + .4, 2.3, 0); beam.position.set(0, 4.6, 0);
+        gan.add(l1, l2, beam); gan.position.set(x, .7, z); gan.visible = false; g.add(gan);
+        bay.gantry = gan;
+      }
+      bay.label = addLabel(bayLabelHtml(grp), new THREE.Vector3(x, .9, z + D.bd / 2 + .3), 'kstatic', 'lbl-card lbl-branch lbl-bay' + (both || stageEl.clientWidth < 720 ? ' compact' : ''), Object.assign({ anchor: 'below' }, grp.kind === 'dep' ? { action: 'select-dep', data: grp.dep.id } : {}));
+      KS.bays[grp.key] = bay;
+    });
+  }
+  KS.lane = null;
+  if (!both) { syncPods(true); applyBayHighlight(); return; }
+  // promotion lane between the clusters
+  const lane = side ? { x: (pos.staging.x + dims.staging.w / 2 + pos.prod.x - dims.prod.w / 2) / 2, z: 0 } : { x: 0, z: pos.staging.z + dims.staging.d / 2 + road / 2 };
+  const len = (side ? KS.extent.d : KS.extent.w) + 30;
+  const rd = box(side ? 6 : len, .1, side ? len : 6, M(P.road), false); rd.position.set(lane.x, .05, lane.z); g.add(rd);
+  for (let i = 0; i < 14; i++) { const o = -len / 2 + 3 + i * 6.5; const dm = box(side ? .3 : 3, .12, side ? 3 : .3, M(P.roadMark), false); dm.position.set(side ? lane.x : o, .08, side ? o : lane.z); g.add(dm); }
+  addLabel('promotion lane · staging → production', new THREE.Vector3(lane.x, .3, side ? KS.extent.d / 2 + 4 : lane.z + 3.4), 'kstatic', 'lbl-strain');
+  KS.lane = lane; KS.laneLen = len;
+  KS.truck = makeTruck(); KS.truck.visible = false; g.add(KS.truck);
+  syncPods(true);
+  applyBayHighlight();
+}
+function slotPos(bay, i) {
+  const cap = bay.rows * 4, layerN = Math.floor(i / cap), k = i % cap, c = k % 4, r = Math.floor(k / 4);
+  return new THREE.Vector3(bay.x - BAY_W / 2 + .6 + SLOT_X * (c + .5), .85 + POD_H / 2 + layerN * (POD_H + .08), bay.z - bay.d / 2 + .65 + SLOT_Z * (r + .5));
+}
+function syncPods(initial) {
+  if (!KS) return;
+  KS.slot.clear();
+  for (const bay of Object.values(KS.bays)) groupPods(bay.grp).forEach((p, i) => KS.slot.set(p.id, slotPos(bay, i)));
+  const pods = layer('kpods');
+  for (const [id, m] of KS.mesh) if (!k8s.pods.has(id) || !KS.slot.has(id)) {
+    pods.remove(m); m.geometry.dispose(); m.material.dispose(); KS.mesh.delete(id);
+    pickables = pickables.filter(x => x !== m);
+  }
+  for (const [id, pos] of KS.slot) {
+    if (KS.mesh.has(id)) continue;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(POD_W, POD_H, POD_D), M(kp().cur, { transparent: true, emissive: 0x000000 }));
+    m.castShadow = true; m.receiveShadow = true;
+    m.position.copy(pos);
+    if (!initial && !reduceMotion) m.position.y += 9;
+    pods.add(pickable(m, { layer: 'kpods', kind: 'pod', id }));
+    KS.mesh.set(id, m);
+  }
+  for (const bay of Object.values(KS.bays)) bay.label.el.innerHTML = bayLabelHtml(bay.grp);
+  k8s.dirty = false;
+}
+const _kc = new THREE.Color();
+function updateK8sScene(dt, t) {
+  if (!KS) return;
+  if (k8s.dirty) syncPods(false);
+  const K = kp(), k = 1 - Math.exp(-dt * 7);
+  for (const [id, m] of KS.mesh) {
+    const p = k8s.pods.get(id), pos = KS.slot.get(id); if (!p || !pos) continue;
+    const tgt = p.status === 'Terminating' ? pos.y - 1.4 : pos.y;
+    m.position.x += (pos.x - m.position.x) * k; m.position.z += (pos.z - m.position.z) * k; m.position.y += (tgt - m.position.y) * k;
+    const d = p.dep;
+    let color = K.cur, op = 1;
+    if (state.k8sLayout === 'node') color = teamColor(d.ns);
+    const target = d.rollout ? d.rollout.target : d.version;
+    if (state.k8sLayout !== 'node' && p.version !== target) color = K.old;
+    if (p.status === 'ContainerCreating') op = .35 + .25 * Math.sin(t * 6);
+    if (p.status === 'Pending') { color = K.pending; op = .5; }
+    if (p.status === 'Terminating') op = .45;
+    if (p.status === 'CrashLoopBackOff') { color = K.crash; op = .55 + .45 * Math.abs(Math.sin(t * 5)); }
+    m.material.color.set(color); m.material.opacity = op;
+    const hl = state.hoverPod === id || (state.selectedDep && state.selectedDep === d.id);
+    m.material.emissive.set(hl ? P.hl : 0x000000); m.material.emissiveIntensity = state.hoverPod === id ? .55 : hl ? .22 : 0;
+  }
+  for (const bay of Object.values(KS.bays)) {
+    if (bay.gantry) {
+      const R = bay.grp.dep.rollout;
+      bay.gantry.visible = !!R;
+      if (R) bay.gantry.position.z = bay.z + Math.sin(t * 1.4) * Math.max(0, bay.d / 2 - .6);
+    }
+    if (bay.tape) bay.tape.visible = bay.grp.node.cordoned;
+  }
+}
+function applyBayHighlight() {
+  if (!KS) return;
+  for (const bay of Object.values(KS.bays)) bay.label.el.classList.toggle('hl', bay.grp.kind === 'dep' && bay.grp.dep.id === state.selectedDep);
+}
+function refreshBayLabels() { if (KS) for (const bay of Object.values(KS.bays)) bay.label.el.innerHTML = bayLabelHtml(bay.grp); }
+function focusDep(id) {
+  if (!KS) return;
+  const bay = KS.bays['dep:' + id] || Object.values(KS.bays).find(b => b.grp.kind === 'node' && k8s.deps.find(d => d.id === id).pods.some(p => p.node === b.grp.node.name));
+  if (bay) focusOn(new THREE.Vector3(bay.x, 0, bay.z - 2), 70);
+}
+function fxPromote(dep) {
+  if (!KS || !KS.lane || dep.env !== 'prod' || reduceMotion) return;
+  const tr = KS.truck, a = -KS.laneLen / 2 + 4, b = KS.laneLen / 2 - 4;
+  tr.visible = true; tr.rotation.y = KS.side ? -Math.PI / 2 : 0;
+  tween(3, p => { const v = a + (b - a) * ease(p); if (KS.side) tr.position.set(KS.lane.x, 0, v); else tr.position.set(v, 0, KS.lane.z); }, () => { tr.visible = false; });
+}
+function podTipHtml(id) {
+  const p = k8s.pods.get(id); if (!p) return '';
+  const d = p.dep, age = sim.now - p.born;
+  const cls = { Running: 'ok', ContainerCreating: 'accent', Terminating: '', CrashLoopBackOff: 'crit', Pending: 'warn' }[p.status];
+  return `<h4>${esc(p.id)}</h4><div class="t-row"><span>Status</span><span class="pill ${cls}">${p.status}</span></div>${row('Image', `${esc(d.name)}:${esc(p.version)}`)}${row('Namespace', d.ns)}${row('Node', p.node || 'unscheduled')}${row('Restarts', p.restarts)}${row('Age', fmtAge(age))}${d.rollout && p.version !== d.rollout.target ? '<div class="t-note">Old version: will be replaced by the rollout.</div>' : ''}`;
+}
+function bayTipHtml(key) {
+  const bay = KS && KS.bays[key]; if (!bay) return '';
+  if (bay.grp.kind === 'node') {
+    const n = bay.grp.node, ps = [...k8s.pods.values()].filter(p => p.node === n.name);
+    const byDep = {}; ps.forEach(p => { byDep[p.dep.name] = (byDep[p.dep.name] || 0) + 1; });
+    return `<h4>${esc(n.name)}</h4>${row('Cluster', esc(k8s.envs[n.env].cluster))}${row('Zone', n.zone)}${row('Pods', `${ps.length} / ${SLOTS}`)}${n.cordoned ? '<div class="t-note safety">Cordoned: pods are being moved off for maintenance.</div>' : ''}<ul>${Object.entries(byDep).map(([k, v]) => `<li>${esc(k)} × ${v}</li>`).join('')}</ul>`;
+  }
+  const d = bay.grp.dep;
+  return `<h4>${esc(d.ns)}/${esc(d.name)}</h4>${row('Environment', envName(d.env))}${row('Image', esc(d.version))}${row('Ready', `${readyCount(d)} / ${d.desired}`)}${d.hpa ? row('Autoscaler', `${d.min}–${d.max} pods · CPU ${Math.round(d.cpu * 100)}%`) : ''}${row('Status', depStatus(d))}${d.rollout ? `<div class="t-note">Rolling out <span class="mono">${esc(d.rollout.target)}</span>${d.rollout.stalled ? ', stuck on crashing pods' : ''}.</div>` : ''}<div class="t-note">Click for pod details.</div>`;
 }
 /* ================================================================
    HUD & panels
@@ -1956,7 +2405,10 @@ const ICON = {
   prod: svg('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2.2 2 2.2 10 0 12M8 2c-2.2 2-2.2 10 0 12"/>'),
   pause: svg('<path d="M5.5 3.5v9M10.5 3.5v9"/>'),
   play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6L13 8z" fill="currentColor"/></svg>',
-  wait: svg('<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>')
+  wait: svg('<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>'),
+  rollout: svg('<rect x="1.5" y="5" width="5.5" height="7" rx=".8"/><rect x="9" y="5" width="5.5" height="7" rx=".8"/><path d="M5 2.5h6M9.5 1l1.5 1.5L9.5 4"/>'),
+  scale: svg('<rect x="2" y="9" width="3" height="5" rx=".6"/><rect x="6.5" y="6" width="3" height="8" rx=".6"/><rect x="11" y="2.5" width="3" height="11.5" rx=".6"/>'),
+  rollback: svg('<path d="M3.5 6.5h7a3 3 0 0 1 0 6H6"/><path d="M6 3.5l-3 3 3 3"/>')
 };
 
 const ui = { dirty: true, lastRender: 0, holdSide: false };
@@ -1964,6 +2416,12 @@ function curRepo() { return state.view.mode === 'repo' ? state.byId[state.view.r
 
 /* ---------- top bar ---------- */
 function renderCrumbs() {
+  document.querySelectorAll('#view-seg button').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.action === 'view-k8s') === (state.view.mode === 'cluster'))));
+  if (state.view.mode === 'cluster') {
+    const d = state.selectedDep && k8s.deps.find(x => x.id === state.selectedDep);
+    $('#crumbs').innerHTML = d ? `<button data-action="select-dep" data-id="">All deployments</button><span class="sep">/</span><span class="here">${esc(d.name)} · ${envName(d.env)}</span>` : `<span class="here">Clusters</span>`;
+    return;
+  }
   const r = curRepo();
   $('#crumbs').innerHTML = r
     ? `<button data-action="town">All repos</button><span class="sep">/</span><span class="here">${esc(r.id)}</span>`
@@ -1982,6 +2440,7 @@ function renderClock() { const s = fmtClock(sim.now); if (s !== lastClock) { $('
 /* ---------- KPI cards ---------- */
 function kpi(label, val, sub, alert) { return `<div class="kpi${alert ? ' alert' : ''}"><div class="k-label">${label}</div><div class="k-val">${val}</div><div class="k-sub">${sub}</div></div>`; }
 function renderKpis() {
+  if (state.view.mode === 'cluster') { $('#kpis').innerHTML = k8sKpis(); return; }
   const r = curRepo();
   const repos = r ? [r] : state.repos;
   const active = sum(repos.map(x => x.branches.filter(isActive).length));
@@ -2005,7 +2464,10 @@ function renderKpis() {
 /* ---------- layer chips + legend ---------- */
 function renderLayers() {
   const el = $('#layers');
-  if (curRepo()) {
+  if (state.view.mode === 'cluster') {
+    const envBtn = (k, n) => `<button class="chip-btn" data-action="k8s-env" data-id="${k}" aria-pressed="${state.k8sEnv === k}">${n}</button>`;
+    el.innerHTML = `<span class="l-title">Cluster</span>${envBtn('prod', 'Production')}${envBtn('staging', 'Staging')}${envBtn('both', 'Both')}<span class="divider"></span><span class="l-title">Group by</span><button class="chip-btn" data-action="k8s-layout" data-id="deployment" aria-pressed="${state.k8sLayout === 'deployment'}">Deployment</button><button class="chip-btn" data-action="k8s-layout" data-id="node" aria-pressed="${state.k8sLayout === 'node'}">Node</button>`;
+  } else if (curRepo()) {
     const L = [['structure', 'Structure'], ['activity', 'Live activity'], ['hotspots', 'Hotspots'], ['owners', 'Owners']];
     el.innerHTML = `<span class="l-title">Color by</span>${L.map(([k, n]) => `<button class="chip-btn" data-action="layer" data-id="${k}" aria-pressed="${state.layer === k}">${n}</button>`).join('')}<span class="divider"></span><button class="chip-btn" data-action="toggle-conflicts" aria-pressed="${state.showConflicts}"><span class="sw" style="color:var(--safety)"></span>Conflict arcs</button>`;
   } else {
@@ -2016,6 +2478,14 @@ function renderLayers() {
 function cssHex(n) { return '#' + n.toString(16).padStart(6, '0'); }
 function renderLegend() {
   const key = $('#legend-key'), body = $('#legend-body');
+  if (state.view.mode === 'cluster') {
+    const K = kp();
+    key.innerHTML = state.k8sLayout === 'node'
+      ? `<div><b>By node</b>: each bay is a node with room for ${SLOTS} pods; containers are colored by team.<div class="teams" style="margin-top:4px">${['payments', 'storefront', 'fulfillment', 'identity', 'data', 'platform'].map(id => `<span><i style="background:${teamColor(id)}"></i>${TEAMS[id].name}</span>`).join('')}</div></div>`
+      : `<div class="teams"><span><i style="background:${cssHex(K.cur)}"></i>current image</span><span><i style="background:${cssHex(K.old)}"></i>old image, being replaced</span><span><i style="background:${cssHex(K.crash)}"></i>CrashLoopBackOff</span></div>`;
+    body.innerHTML = `<div><b>Platform</b> = a cluster. Pick Both to see staging and production side by side.</div><div><b>Each container</b> is a pod. Faded and pulsing means starting; sinking means terminating.</div><div><b>Yellow gantry</b> = a rollout in progress. New pods start before old ones stop.</div><div><b>Yellow tape</b> around a node = cordoned and draining.</div><div><b>Truck</b> on the promotion lane = a release rolling out to production.</div>`;
+    return;
+  }
   if (curRepo()) {
     let k = '';
     if (state.layer === 'activity') k = `<div><b>Live activity</b>: files pushed to recently glow, cooling over about an hour.<div class="ramp" style="background:linear-gradient(90deg,${P.heat.map(cssHex).join(',')})"></div><div class="ramp-lbl"><span>quiet</span><span>being edited now</span></div></div>`;
@@ -2035,7 +2505,7 @@ function renderSide() {
   if (ui.holdSide) return;
   if (side.contains(document.activeElement) && document.activeElement !== side) { ui.pendingSide = true; return; }
   const r = curRepo();
-  side.innerHTML = r ? repoPanel(r) : townPanel();
+  side.innerHTML = state.view.mode === 'cluster' ? clusterPanel() : r ? repoPanel(r) : townPanel();
   ui.pendingSide = false;
 }
 function stat(l, v, cls) { return `<div class="stat ${cls || ''}"><div class="s-l">${l}</div><div class="s-v">${v}</div></div>`; }
@@ -2094,6 +2564,7 @@ function repoPanel(r) {
     ${stagedList.length ? `<div class="staged-list">${stagedList.map(c => `<div class="staged-item"><button class="sha${state.selectedSha === c.sha ? ' sel' : ''}" data-action="trace" data-id="${c.sha}">${c.sha}</button><span>#${c.pr} ${esc(c.msg)}</span></div>`).join('')}</div>` : '<div class="empty">Nothing waiting. main matches production.</div>'}
     <button class="btn primary" data-action="ship" ${readyN ? '' : 'disabled'}>Ship ${readyN || ''} to production</button>
   </section>
+  ${repoK8sSection(r)}
   <section>
     <h3>Review queues <span class="h-aside">pending reviews per person</span></h3>
     ${rq.length ? rq.map(q => `<div class="rq">${avatar(q.p, true)}<div><div class="rq-name">${esc(PEOPLE[q.p])}</div><div class="rq-sub">${q.prs.map(p => '#' + p.n).join(', ')} · oldest ${fmtWait(q.oldest)}</div></div>
@@ -2180,8 +2651,12 @@ function traceSteps(c) {
     if (!bd) S.push({ k: 'build', l: 'Build', s: 'queued', st: 'pending' });
     else S.push({ k: 'build', l: 'Build', s: `${esc(ciLabel(repo, bd.id))} ${bd.status === 'running' ? 'running' : bd.status === 'failed' ? 'failed, retrying' : `passed in ${Math.max(1, Math.round(bd.end - bd.start))}m`}`, st: bd.status === 'running' ? 'active' : bd.status === 'failed' ? 'failed' : 'done' });
     S.push({ k: 'image', l: 'Image', s: m.image ? `<span class="mono">sha-${m.sha}</span>` : 'after build', st: m.image ? 'done' : 'pending', mono: true });
-    S.push({ k: 'staging', l: 'Staging', s: m.staging ? `deployed ${fmtWhen(m.staging)}` : m.image ? 'deploying' : 'after image', st: m.staging ? 'done' : m.image ? 'active' : 'pending' });
-    S.push({ k: 'prod', l: 'Production', s: m.prod ? `v${esc(m.prodVersion)} · ${fmtWhen(m.prod)}` : m.staging ? 'waiting for the next release' : 'after staging', st: m.prod ? 'done' : m.staging ? 'blocked' : 'pending' });
+    const sd = depFor('staging', repo.id), pd = depFor('prod', repo.id);
+    const sRoll = sd && sd.rollout && sd.rollout.target === 'sha-' + m.sha ? sd.rollout : null;
+    const podsAt = (d, v) => d.pods.filter(p => p.version === v && p.status === 'Running').length;
+    S.push({ k: 'staging', l: 'Staging', s: m.staging ? `deployed ${fmtWhen(m.staging)}` : sRoll ? (sRoll.stalled ? 'rollout stuck: pods crashing' : `rolling out · ${podsAt(sd, sRoll.target)}/${sd.desired} pods`) : m.image ? 'deploying' : 'after image', st: m.staging ? 'done' : sRoll && sRoll.stalled ? 'failed' : m.image ? 'active' : 'pending' });
+    const rolling = !m.prod && m.prodVersion;
+    S.push({ k: 'prod', l: 'Production', s: m.prod ? `v${esc(m.prodVersion)} · ${fmtWhen(m.prod)}` : rolling ? `rolling out v${esc(m.prodVersion)}${pd ? ` · ${podsAt(pd, m.prodVersion)}/${pd.desired} pods` : ''}` : m.staging ? 'waiting for the next release' : 'after staging', st: m.prod ? 'done' : rolling ? 'active' : m.staging ? 'blocked' : 'pending' });
   } else {
     if (!pr) S.push({ k: 'pr', l: 'Pull request', s: b ? 'not opened yet' : 'branch was deleted', st: b ? 'blocked' : 'pending' });
     else S.push({ k: 'pr', l: 'Pull request', s: `#${pr.n} ${pr.state === 'draft' ? 'draft' : 'open'}`, st: pr.state === 'draft' ? 'blocked' : 'done' });
@@ -2223,6 +2698,70 @@ function toast(o) {
   setTimeout(() => el.remove(), 7000);
 }
 /* ================================================================
+   Kubernetes panels
+   ================================================================ */
+function k8sKpis() {
+  const pods = [...k8s.pods.values()];
+  const ready = pods.filter(p => p.status === 'Running').length;
+  const desired = sum(k8s.deps.map(d => d.desired));
+  const rolling = k8s.deps.filter(d => d.rollout);
+  const bad = pods.filter(p => p.status === 'CrashLoopBackOff' || p.status === 'Pending').length;
+  const nodes = Object.values(k8s.nodes), cordoned = nodes.filter(n => n.cordoned).length;
+  return kpi('Pods ready', `${ready}<small>/ ${desired}</small>`, `${pods.length} pods in 2 clusters`)
+    + kpi('Rollouts in progress', rolling.length, rolling.length ? esc(rolling.map(d => d.name).slice(0, 2).join(', ')) : 'nothing rolling out')
+    + kpi('Unhealthy pods', bad, bad ? 'CrashLoopBackOff or Pending' : 'all pods healthy', bad > 0)
+    + kpi('Nodes schedulable', `${nodes.length - cordoned}<small>/ ${nodes.length}</small>`, cordoned ? `<b>${cordoned} draining for maintenance</b>` : 'none cordoned')
+    + kpi('Container restarts', sum(pods.map(p => p.restarts)), 'across current pods');
+}
+const POD_CLS = { Running: 'ok', ContainerCreating: 'accent', Terminating: '', CrashLoopBackOff: 'crit', Pending: 'warn' };
+const POD_WORD = { Running: 'Running', ContainerCreating: 'Starting', Terminating: 'Terminating', CrashLoopBackOff: 'CrashLoop', Pending: 'Pending' };
+function depDetail(d) {
+  const st = depStatus(d);
+  const pods = d.pods.slice().sort((a, b) => a.born - b.born);
+  return `<div class="chips"><span class="pill ${DEP_STATUS_CLS[st]}">${st}</span><span class="pill">image ${esc(d.version)}</span>${d.hpa ? `<span class="pill">autoscaler ${d.min}–${d.max} · CPU ${Math.round(d.cpu * 100)}%</span>` : `<span class="pill">${d.desired} replicas</span>`}</div>
+    ${d.rollout ? `<div class="t-note" style="margin-top:8px;color:var(--muted)">Rolling out <span class="mono">${esc(d.rollout.target)}</span>${d.rollout.stalled ? ': <b style="color:var(--crit)">new pods are crashing</b>' : ''}</div>` : ''}
+    <div class="tbl-wrap" style="margin-top:12px"><table class="btable pods-tbl"><thead><tr><th>Pod</th><th>Status</th><th>Node</th><th>Restarts</th><th>Age</th></tr></thead><tbody>
+    ${pods.map(p => `<tr><td class="bn" title="${esc(p.id)}">…${esc(p.id.slice(d.name.length))}<div style="color:var(--faint)">${esc(p.version)}</div></td><td class="st"><span class="pill ${POD_CLS[p.status]}">${POD_WORD[p.status]}</span></td><td class="ab">${esc(p.node || '—')}</td><td class="num">${p.restarts}</td><td class="num">${fmtAge(sim.now - p.born)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="chips" style="margin-top:10px">${d.repo ? `<button class="btn" data-action="enter-repo" data-id="${d.repo}">Open ${esc(d.repo)} code</button>` : ''}<button class="btn" data-action="select-dep" data-id="">Show all deployments</button></div>`;
+}
+function clusterPanel() {
+  const sel = state.selectedDep && k8s.deps.find(d => d.id === state.selectedDep);
+  const rolling = k8s.deps.filter(d => d.rollout);
+  const pods = [...k8s.pods.values()];
+  const attn = pods.filter(p => p.status === 'CrashLoopBackOff' || p.status === 'Pending');
+  const cordoned = Object.values(k8s.nodes).filter(n => n.cordoned);
+  const repoDeps = state.repos.filter(r => depFor('prod', r.id));
+  let h = `<section>
+    <div class="eyebrow">Kubernetes · 2 clusters · ${Object.keys(k8s.nodes).length} nodes</div>
+    <h2>${sel ? esc(sel.name) : 'Deployments'}</h2>
+    <div class="repo-meta">${sel ? `${esc(sel.ns)} namespace · ${envName(sel.env)}` : 'Every shipping container is a pod. Click a bay to see its pods.'}</div>
+    ${sel ? depDetail(sel) : ''}</section>`;
+  h += `<section><h3>Rollouts in progress <span class="count">${rolling.length}</span></h3>${rolling.length ? rolling.map(d => {
+    const R = d.rollout, done = d.pods.filter(p => p.version === R.target && p.status === 'Running').length;
+    return `<button class="rollout${R.stalled ? ' stuck' : ''}" data-action="select-dep" data-id="${d.id}"><div class="r-top"><span>${esc(d.name)} · ${envName(d.env)}</span><span class="pill ${R.stalled ? 'crit' : 'accent'}">${R.stalled ? 'stuck' : `${done}/${d.desired} new pods`}</span></div><div class="r-sub">${esc(R.from)} → ${esc(R.target)}</div><div class="progress"><i style="width:${Math.min(100, done / d.desired * 100)}%"></i></div></button>`;
+  }).join('') : '<div class="empty">Nothing rolling out right now.</div>'}</section>`;
+  h += `<section><h3>Needs attention <span class="count ${attn.length ? 'safety' : ''}">${attn.length + cordoned.length}</span></h3>${attn.length || cordoned.length
+    ? attn.map(p => `<div class="attn"><span class="pill ${POD_CLS[p.status]}">${POD_WORD[p.status]}</span><span class="mono">${esc(p.id)}</span><span style="color:var(--muted)">${p.restarts} restarts</span></div>`).join('') + cordoned.map(n => `<div class="attn"><span class="pill warn">cordoned</span><span class="mono">${esc(n.name)}</span><span style="color:var(--muted)">draining for maintenance</span></div>`).join('')
+    : '<div class="empty">All pods healthy and every node schedulable.</div>'}</section>`;
+  h += `<section><h3>Staging vs production</h3>${repoDeps.map(r => {
+    const pd = depFor('prod', r.id), sd = depFor('staging', r.id), n = r.staged.length;
+    return `<div class="dep"><div class="d-top"><span>${esc(r.id)}</span><span class="pill ${n ? 'warn' : 'ok'}">${n ? `${n} change${n > 1 ? 's' : ''} not in prod` : 'in sync'}</span></div><div class="d-sub">prod <span class="mono">${esc(pd.version)}</span> · staging <span class="mono">${esc(sd.version)}</span></div></div>`;
+  }).join('')}</section>`;
+  for (const env of ['prod', 'staging']) {
+    h += `<section><h3>${envName(env)} <span class="h-aside">${esc(k8s.envs[env].cluster)}</span></h3><div class="tbl-wrap"><table class="btable"><thead><tr><th>Deployment</th><th>Ready</th><th>Image</th><th>Status</th></tr></thead><tbody>
+    ${k8s.deps.filter(d => d.env === env).map(d => { const st = depStatus(d); return `<tr data-action="select-dep" data-id="${d.id}"${d.id === state.selectedDep ? ' style="background:var(--accent-soft)"' : ''}><td class="bn">${esc(d.name)}</td><td class="num">${readyCount(d)}/${d.desired}</td><td class="ab">${esc(d.version)}</td><td><span class="pill ${DEP_STATUS_CLS[st]}">${st}</span></td></tr>`; }).join('')}
+    </tbody></table></div></section>`;
+  }
+  return h;
+}
+function repoK8sSection(r) {
+  const ds = ['prod', 'staging'].map(e => depFor(e, r.id)).filter(Boolean);
+  if (!ds.length) return `<section><h3>Kubernetes</h3><div class="empty">${r.lib ? 'Library: shipped inside other services, not deployed on its own.' : r.id === 'mobile-app' ? 'Ships through the app stores, not Kubernetes.' : 'Helm charts, applied to the clusters by the platform pipeline.'}</div></section>`;
+  return `<section><h3>Running in Kubernetes</h3>${ds.map(d => { const st = depStatus(d); return `<div class="k8s-row"><span class="kr-env">${envName(d.env)}</span><span class="pill ${DEP_STATUS_CLS[st]}">${st}</span><div class="kr-sub"><span class="num">${readyCount(d)}/${d.desired} pods ready</span> · <span class="mono">${esc(d.version)}</span>${d.rollout ? ` → <span class="mono">${esc(d.rollout.target)}</span>` : ''}</div></div>`; }).join('')}
+    <button class="btn" style="margin-top:10px" data-action="open-k8s" data-id="${ds[0].id}">Open in Kubernetes view</button></section>`;
+}
+/* ================================================================
    Wiring: sim events → 3D + panels
    ================================================================ */
 emit = (type, repo, data) => {
@@ -2243,6 +2782,9 @@ emit = (type, repo, data) => {
       if (inRepo) RS.dirty = true;
       if (TS && (type === 'branches')) refreshTownBuilding(repo);
       break;
+    case 'k8s':
+      if (KS && data.rolloutStart) fxPromote(data.rolloutStart);
+      break;
     case 'build': case 'deploy':
       if (inRepo && RS.stageLabel) RS.stageLabel.el.innerHTML = stageLabelHtml(repo);
       break;
@@ -2257,15 +2799,36 @@ emit = (type, repo, data) => {
 
 /* ---------- view switching ---------- */
 function enterRepo(id, keepCamera) {
-  state.view = { mode: 'repo', repoId: id };
+  state.view = { mode: 'repo', repoId: id }; state.lastCode = state.view; state.hoverPod = null;
   state.focusBranch = null; state.hoverBranch = null; state.hoverFile = null;
   tipEl.hidden = true;
   buildRepoScene(state.byId[id]);
   if (!keepCamera) defaultView(true);
   renderAll();
 }
+function enterCluster(depId) {
+  state.view = { mode: 'cluster' };
+  state.focusBranch = null; state.hoverBranch = null; state.hoverFile = null; state.hoverPod = null;
+  state.selectedDep = depId || null;
+  const d = depId && k8s.deps.find(x => x.id === depId);
+  if (d && state.k8sEnv !== 'both') state.k8sEnv = d.env;
+  tipEl.hidden = true;
+  buildClusterScene();
+  defaultView(!depId);
+  if (depId) { cam.r = goal.r * 1.4; focusDep(depId); }
+  renderAll();
+}
+function selectDep(id) {
+  state.selectedDep = id || null;
+  const d = id && k8s.deps.find(x => x.id === id);
+  if (d && state.k8sEnv !== 'both' && d.env !== state.k8sEnv) { state.k8sEnv = d.env; buildClusterScene(); renderLayers(); }
+  applyBayHighlight();
+  if (id) focusDep(id); else defaultView(false);
+  renderCrumbs(); renderSide();
+  $('#side').scrollTop = 0;
+}
 function enterTown() {
-  state.view = { mode: 'town' };
+  state.view = { mode: 'town' }; state.lastCode = state.view; state.hoverPod = null;
   state.focusBranch = null; state.hoverBranch = null; state.hoverFile = null;
   tipEl.hidden = true;
   buildTownScene();
@@ -2310,6 +2873,8 @@ function handleClick() {
   const d = pickAt();
   if (!d) { if (state.focusBranch) { state.focusBranch = null; applyHighlights(true); renderSide(); } return; }
   if (d.kind === 'repo') return enterRepo(d.id);
+  if (d.kind === 'pod') { const p = k8s.pods.get(d.id); if (p) selectDep(p.dep.id); return; }
+  if (d.kind === 'bay') { if (d.key.startsWith('dep:')) selectDep(d.key.slice(4)); return; }
   if (d.kind === 'branch') return focusBranch(d.name);
   if (d.kind === 'conflict') return focusConflict(d.key);
   if (d.kind === 'staged') return selectCommit(d.sha);
@@ -2329,6 +2894,12 @@ document.addEventListener('click', e => {
     case 'pause': sim.paused = !sim.paused; renderSimControls(); break;
     case 'speed': sim.speed = +t.dataset.speed; renderSimControls(); break;
     case 'town': enterTown(); break;
+    case 'view-k8s': if (state.view.mode !== 'cluster') enterCluster(); break;
+    case 'view-code': if (state.view.mode === 'cluster') { const l = state.lastCode || { mode: 'repo', repoId: 'payments-api' }; if (l.mode === 'town') enterTown(); else enterRepo(l.repoId); } break;
+    case 'open-k8s': enterCluster(id); break;
+    case 'select-dep': selectDep(id); break;
+    case 'k8s-layout': state.k8sLayout = id; buildClusterScene(); renderLayers(); break;
+    case 'k8s-env': state.k8sEnv = id; buildClusterScene(); defaultView(false); renderLayers(); break;
     case 'enter-repo': enterRepo(id); break;
     case 'focus-branch': focusBranch(id); break;
     case 'focus-conflict': focusConflict(id); break;
@@ -2360,7 +2931,9 @@ function resize() {
 new ResizeObserver(resize).observe(stageEl);
 function rethemeScene() {
   applyTheme();
-  if (state.view.mode === 'repo') enterRepo(state.view.repoId, true); else { buildTownScene(); renderAll(); }
+  if (state.view.mode === 'repo') enterRepo(state.view.repoId, true);
+  else if (state.view.mode === 'cluster') { buildClusterScene(); renderAll(); }
+  else { buildTownScene(); renderAll(); }
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', rethemeScene);
 new MutationObserver(rethemeScene).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -2382,6 +2955,7 @@ function frame(now) {
   }
   for (const k in tickers) for (const fn of tickers[k]) fn(t, dt);
   updateEmissive(dt);
+  updateK8sScene(dt, t);
   if (RS && RS.dirty && RS.hold === 0 && t - RS.lastRebuild > .4) refreshBranches();
   if (ptr.dirty && ptr.inside && !ptr.down) { ptr.dirty = false; setHover(pickAt()); }
   positionTip();
@@ -2392,7 +2966,7 @@ function frame(now) {
   uiAcc += dt;
   if ((ui.dirty && uiAcc > .35) || uiAcc > 1.5) {
     uiAcc = 0; ui.dirty = false;
-    renderKpis(); renderSide(); renderTrace();
+    renderKpis(); renderSide(); renderTrace(); refreshBayLabels();
     if (RS && RS.stageLabel) RS.stageLabel.el.innerHTML = stageLabelHtml(RS.repo);
   }
   requestAnimationFrame(frame);
@@ -2400,6 +2974,7 @@ function frame(now) {
 
 /* ---------- boot ---------- */
 buildRepos();
+buildK8s();
 seedFeed();
 applyTheme();
 resize();

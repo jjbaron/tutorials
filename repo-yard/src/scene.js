@@ -27,7 +27,7 @@ const world = new THREE.Group(); scene.add(world);
 const PAL = {
   light: { bg: 0xe8ecf0, ground: 0xe0e5ea, lot: 0xf2f4f7, road: 0xcad2da, roadMark: 0xf5f7f9, plate: 0xf3f5f8, file: 0xf7f9fb, pad: 0xd5dbe2, padRelease: 0xcbd7f3,
     scaffold: 0x6c7a8c, hl: 0x2853c7, tether: 0x9aa5b2, strained: 0xc28a0e, spark: 0xec6a18, weed: 0x67a956, cloud: 0xffffff, cloudOp: .62,
-    hemiSky: 0xffffff, hemiGround: 0xb2bdc9, hemiI: .92, sunI: .7, windowLit: 0xffbe4d, winI: .45, facade: '#f3f5f8', win: '#c9d2dc', winLit: '#ffcf70', roof: 0xdde3e9,
+    hemiSky: 0xffffff, hemiGround: 0xa9b4c1, hemiI: .66, sunI: .52, windowLit: 0xffbe4d, winI: .45, facade: '#f3f5f8', win: '#c9d2dc', winLit: '#ffcf70', roof: 0xdde3e9,
     ok: 0x15875a, crit: 0xc93636, run: 0x2853c7, jenkins: 0xb04f29, newci: 0x0d817e, heat: [0xeef1f4, 0xf6d27c, 0xec8a2c, 0xc8342b], hotLo: 0xeef1f4, hotMid: 0xf0a24a, hotHi: 0xc62f2f,
     unowned: 0xc3cad2, truck: 0xfafbfc, cargo: 0x2853c7, crate: 0xc99c5c, pallet: 0xb48a57, pipe: 0xa4afbb, smoke: 0xffffff, wheel: 0x2b3440, crane: 0xe0a41c,
     tints: ['#dce5fa', '#f6dde7', '#d7ede1', '#e8def6', '#f5e5cd', '#d4e9f3', '#f3dbd3', '#e2e9cf', '#e6e1ee'] },
@@ -87,8 +87,8 @@ function updateLabels() {
     if (!show) { if (!L.hidden) { L.el.style.display = 'none'; L.hidden = true; } continue; }
     if (L.hidden) { L.el.style.display = ''; L.hidden = false; }
     const x = (_v.x + 1) / 2 * w, y = (1 - _v.y) / 2 * h;
-    const ax = L.anchor === 'left' ? '0' : '-50%';
-    L.el.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(${ax},-100%)`;
+    const ax = L.anchor === 'left' ? '0' : '-50%', ay = L.anchor === 'below' ? '4px' : '-100%';
+    L.el.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(${ax},${ay})`;
   }
 }
 
@@ -108,14 +108,17 @@ function updateCamera(dt) {
 }
 function contentRadius() {
   if (state.view.mode === 'town') return 70;
+  if (state.view.mode === 'cluster') return KS ? Math.max(KS.extent.w / 2 / Math.max(1, aspectNow() / 1.25), KS.extent.d / 2) + 4 : 60;
   if (!RS) return 60;
   return Math.max(RS.campus.hx, RS.campus.hz) + 26;
 }
+function aspectNow() { return Math.max(.4, stageEl.clientWidth / Math.max(1, stageEl.clientHeight)); }
 function defaultView(fromAbove) {
   const aspect = Math.max(.4, stageEl.clientWidth / Math.max(1, stageEl.clientHeight));
   const R = contentRadius();
-  const fit = R / Math.tan(THREE.MathUtils.degToRad(15)) * (aspect >= 1.25 ? .78 : .78 * 1.6 / aspect);
-  const v = { target: state.view.mode === 'town' ? new THREE.Vector3(-2, 0, -7) : new THREE.Vector3(4, 0, -6), r: clamp(fit, 60, 520), theta: .62, phi: .92 };
+  const fit = R / Math.tan(THREE.MathUtils.degToRad(15)) * (aspect >= 1.25 ? .78 : .78 * (state.view.mode === 'cluster' ? 1.2 : 1.6) / aspect);
+  const kc = state.view.mode === 'cluster';
+  const v = { target: state.view.mode === 'town' ? new THREE.Vector3(-2, 0, -7) : kc ? new THREE.Vector3(0, 0, -3) : new THREE.Vector3(4, 0, -6), r: clamp(fit, 60, 520), theta: kc ? .16 : .62, phi: kc ? .78 : .92 };
   goal.target.copy(v.target); goal.r = v.r; goal.theta = v.theta; goal.phi = v.phi;
   if (fromAbove) { cam.target.copy(v.target); cam.r = v.r * 1.6; cam.theta = v.theta - .5; cam.phi = .55; }
 }
@@ -195,7 +198,7 @@ const fileHeight = f => .7 + Math.sqrt(f.loc) / 6.6;
 
 function buildRepoScene(repo) {
   clearAll();
-  TS = null;
+  TS = null; KS = null;
   RS = { repo, fileMesh: {}, fileTop: {}, sites: {}, hold: 0, dirty: false, lastRebuild: 0, rings: [] };
   buildCampus(repo);
   buildStage(repo);
@@ -628,7 +631,7 @@ function townLabelHtml(repo) {
 }
 function buildTownScene() {
   clearAll();
-  RS = null; TS = { bld: {} };
+  RS = null; KS = null; TS = { bld: {} };
   const g = layer('town');
   for (const v of [-48, -16, 16, 48]) {
     const r1 = box(6.5, .1, 108, M(P.road), false); r1.position.set(v, .05, 0); g.add(r1);
@@ -729,6 +732,7 @@ function setHover(d) {
   const prevB = state.hoverBranch, prevF = state.hoverFile;
   state.hoverBranch = d && (d.kind === 'branch') ? d.name : null;
   state.hoverFile = d && d.kind === 'file' ? d.id : null;
+  state.hoverPod = d && d.kind === 'pod' ? d.id : null;
   if (prevB !== state.hoverBranch || prevF !== state.hoverFile) applyHighlights();
   canvas.classList.toggle('pointer', !!d && d.kind !== 'district');
   if (!d) { tipEl.hidden = true; return; }
@@ -772,6 +776,8 @@ function tipHtml(d) {
     const cr = collisions(r).filter(c => !c.stale).length;
     return `<h4>${esc(r.id)}</h4>${row('Stack', esc(r.lang))}${row('Team', TEAMS[r.team].name)}${row('CI', r.ci === 'jenkins' ? 'Jenkins' : 'New CI/CD')}${row('In production', 'v' + r.version)}${row('Active branches (lit windows)', r.branches.filter(isActive).length)}${row('Open PRs', openPrs(r).length)}${row('Commits, last hour (smoke)', commitsSince(r, 60))}${row('Staged for release', r.staged.length)}${cr ? `<div class="t-note safety">${cr} conflict risk${cr > 1 ? 's' : ''} between open branches</div>` : ''}<div class="t-note">Click to open the repo.</div>`;
   }
+  if (d.kind === 'pod') return podTipHtml(d.id);
+  if (d.kind === 'bay') return bayTipHtml(d.key);
   if (d.kind === 'pipe') {
     const L = state.byId[d.lib], C = state.byId[d.consumer];
     const behind = cmpVer(C.deps[L.id], L.version) < 0;

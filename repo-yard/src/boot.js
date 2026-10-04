@@ -19,6 +19,9 @@ emit = (type, repo, data) => {
       if (inRepo) RS.dirty = true;
       if (TS && (type === 'branches')) refreshTownBuilding(repo);
       break;
+    case 'k8s':
+      if (KS && data.rolloutStart) fxPromote(data.rolloutStart);
+      break;
     case 'build': case 'deploy':
       if (inRepo && RS.stageLabel) RS.stageLabel.el.innerHTML = stageLabelHtml(repo);
       break;
@@ -33,15 +36,36 @@ emit = (type, repo, data) => {
 
 /* ---------- view switching ---------- */
 function enterRepo(id, keepCamera) {
-  state.view = { mode: 'repo', repoId: id };
+  state.view = { mode: 'repo', repoId: id }; state.lastCode = state.view; state.hoverPod = null;
   state.focusBranch = null; state.hoverBranch = null; state.hoverFile = null;
   tipEl.hidden = true;
   buildRepoScene(state.byId[id]);
   if (!keepCamera) defaultView(true);
   renderAll();
 }
+function enterCluster(depId) {
+  state.view = { mode: 'cluster' };
+  state.focusBranch = null; state.hoverBranch = null; state.hoverFile = null; state.hoverPod = null;
+  state.selectedDep = depId || null;
+  const d = depId && k8s.deps.find(x => x.id === depId);
+  if (d && state.k8sEnv !== 'both') state.k8sEnv = d.env;
+  tipEl.hidden = true;
+  buildClusterScene();
+  defaultView(!depId);
+  if (depId) { cam.r = goal.r * 1.4; focusDep(depId); }
+  renderAll();
+}
+function selectDep(id) {
+  state.selectedDep = id || null;
+  const d = id && k8s.deps.find(x => x.id === id);
+  if (d && state.k8sEnv !== 'both' && d.env !== state.k8sEnv) { state.k8sEnv = d.env; buildClusterScene(); renderLayers(); }
+  applyBayHighlight();
+  if (id) focusDep(id); else defaultView(false);
+  renderCrumbs(); renderSide();
+  $('#side').scrollTop = 0;
+}
 function enterTown() {
-  state.view = { mode: 'town' };
+  state.view = { mode: 'town' }; state.lastCode = state.view; state.hoverPod = null;
   state.focusBranch = null; state.hoverBranch = null; state.hoverFile = null;
   tipEl.hidden = true;
   buildTownScene();
@@ -86,6 +110,8 @@ function handleClick() {
   const d = pickAt();
   if (!d) { if (state.focusBranch) { state.focusBranch = null; applyHighlights(true); renderSide(); } return; }
   if (d.kind === 'repo') return enterRepo(d.id);
+  if (d.kind === 'pod') { const p = k8s.pods.get(d.id); if (p) selectDep(p.dep.id); return; }
+  if (d.kind === 'bay') { if (d.key.startsWith('dep:')) selectDep(d.key.slice(4)); return; }
   if (d.kind === 'branch') return focusBranch(d.name);
   if (d.kind === 'conflict') return focusConflict(d.key);
   if (d.kind === 'staged') return selectCommit(d.sha);
@@ -105,6 +131,12 @@ document.addEventListener('click', e => {
     case 'pause': sim.paused = !sim.paused; renderSimControls(); break;
     case 'speed': sim.speed = +t.dataset.speed; renderSimControls(); break;
     case 'town': enterTown(); break;
+    case 'view-k8s': if (state.view.mode !== 'cluster') enterCluster(); break;
+    case 'view-code': if (state.view.mode === 'cluster') { const l = state.lastCode || { mode: 'repo', repoId: 'payments-api' }; if (l.mode === 'town') enterTown(); else enterRepo(l.repoId); } break;
+    case 'open-k8s': enterCluster(id); break;
+    case 'select-dep': selectDep(id); break;
+    case 'k8s-layout': state.k8sLayout = id; buildClusterScene(); renderLayers(); break;
+    case 'k8s-env': state.k8sEnv = id; buildClusterScene(); defaultView(false); renderLayers(); break;
     case 'enter-repo': enterRepo(id); break;
     case 'focus-branch': focusBranch(id); break;
     case 'focus-conflict': focusConflict(id); break;
@@ -136,7 +168,9 @@ function resize() {
 new ResizeObserver(resize).observe(stageEl);
 function rethemeScene() {
   applyTheme();
-  if (state.view.mode === 'repo') enterRepo(state.view.repoId, true); else { buildTownScene(); renderAll(); }
+  if (state.view.mode === 'repo') enterRepo(state.view.repoId, true);
+  else if (state.view.mode === 'cluster') { buildClusterScene(); renderAll(); }
+  else { buildTownScene(); renderAll(); }
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', rethemeScene);
 new MutationObserver(rethemeScene).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -158,6 +192,7 @@ function frame(now) {
   }
   for (const k in tickers) for (const fn of tickers[k]) fn(t, dt);
   updateEmissive(dt);
+  updateK8sScene(dt, t);
   if (RS && RS.dirty && RS.hold === 0 && t - RS.lastRebuild > .4) refreshBranches();
   if (ptr.dirty && ptr.inside && !ptr.down) { ptr.dirty = false; setHover(pickAt()); }
   positionTip();
@@ -168,7 +203,7 @@ function frame(now) {
   uiAcc += dt;
   if ((ui.dirty && uiAcc > .35) || uiAcc > 1.5) {
     uiAcc = 0; ui.dirty = false;
-    renderKpis(); renderSide(); renderTrace();
+    renderKpis(); renderSide(); renderTrace(); refreshBayLabels();
     if (RS && RS.stageLabel) RS.stageLabel.el.innerHTML = stageLabelHtml(RS.repo);
   }
   requestAnimationFrame(frame);
@@ -176,6 +211,7 @@ function frame(now) {
 
 /* ---------- boot ---------- */
 buildRepos();
+buildK8s();
 seedFeed();
 applyTheme();
 resize();

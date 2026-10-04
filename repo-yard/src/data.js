@@ -304,7 +304,8 @@ const state = {
   repos: [], byId: {}, commits: new Map(), feed: [],
   view: { mode: 'repo', repoId: 'payments-api' },
   layer: 'structure', showConflicts: true, townColor: 'ci', showPipes: true,
-  selectedSha: null, focusBranch: null, hoverBranch: null, hoverFile: null
+  selectedSha: null, focusBranch: null, hoverBranch: null, hoverFile: null,
+  k8sLayout: 'deployment', k8sEnv: 'prod', selectedDep: null, hoverPod: null
 };
 const timers = [];
 const after = (min, fn) => timers.push({ at: sim.now + min, fn });

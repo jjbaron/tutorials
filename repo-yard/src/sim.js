@@ -17,10 +17,10 @@ function pickReviewers(repo, author) {
   return shuffle(pool).slice(0, 2).map(p => ({ p, s: 'pending' }));
 }
 function addFeed(o) {
-  const item = Object.assign({ id: Math.random().toString(36).slice(2), t: sim.now }, o, { repo: o.repo.id });
+  const item = Object.assign({ id: Math.random().toString(36).slice(2), t: sim.now }, o, { repo: o.repo ? o.repo.id : (o.label || 'cluster') });
   state.feed.unshift(item);
   if (state.feed.length > 80) state.feed.pop();
-  emit('feed', o.repo, item);
+  emit('feed', o.repo || null, item);
 }
 const nm = id => `<b>${esc(firstName(id))}</b>`;
 const code = s => `<code>${esc(s)}</code>`;
@@ -152,11 +152,7 @@ function startMainBuild(repo, c) {
     if (pass) {
       c.image = `${repo.id}:sha-${c.sha}`;
       addFeed({ repo, icon: 'build', cls: 'ok', html: `${ciLabel(repo, id)} passed on ${code('main')} · image ${code('sha-' + c.sha)} published`, sha: c.sha });
-      after(rnd(1, 2.5), () => {
-        c.staging = sim.now;
-        addFeed({ repo, icon: 'deploy', cls: 'accent', html: `Deployed ${code('sha-' + c.sha)} to staging`, sha: c.sha });
-        emit('deploy', repo, { commit: c });
-      });
+      deployStaging(repo, c);
     } else {
       addFeed({ repo, icon: 'fail', cls: 'crit', html: `${ciLabel(repo, id)} failed on ${code('main')} · retrying`, sha: c.sha });
       emit('toast', repo, { cls: 'crit', title: `main is red in ${repo.id}`, body: `${esc(ciLabel(repo, id))} failed after merging #${c.pr}. Retrying the build.` });
@@ -173,12 +169,13 @@ function doRelease(repo, manual) {
   const minor = ready.some(c => /^(Add|Partial|Passkey|Apple|Split|Batch|Combobox|Open|Route|Expose|Track|Lazy|Propagate)/.test(c.msg));
   const v = bumpVersion(repo.version, minor ? 'minor' : 'patch');
   repo.version = v;
-  for (const c of ready) { c.prod = sim.now; c.prodVersion = v; }
+  for (const c of ready) c.prodVersion = v;
   repo.staged = repo.staged.filter(s => !ready.includes(state.commits.get(s)));
   repo.lastRelease = sim.now;
-  addFeed({ repo, icon: 'release', cls: 'ok', html: `Released ${code(repo.id + ' ' + v)} to production · ${ready.length} change${ready.length > 1 ? 's' : ''}` });
-  emit('toast', repo, { cls: 'ok', title: `${repo.id} ${v} is live`, body: `${ready.length} merged change${ready.length > 1 ? 's' : ''} shipped to production.` });
+  addFeed({ repo, icon: 'release', cls: 'ok', html: `Released ${code(repo.id + ' ' + v)} · ${ready.length} change${ready.length > 1 ? 's' : ''} heading to production` });
+  emit('toast', repo, { cls: 'ok', title: `${repo.id} ${v} released`, body: `${ready.length} merged change${ready.length > 1 ? 's are' : ' is'} rolling out to production.` });
   emit('release', repo, { count: ready.length, version: v });
+  deployProd(repo, ready, v);
   return true;
 }
 
@@ -269,5 +266,6 @@ function simTick(dtMin) {
   const k = Math.exp(-dtMin / 90);
   for (const r of state.repos) for (const f of r.files) f.heat *= k;
   for (let i = timers.length - 1; i >= 0; i--) if (timers[i].at <= sim.now) { const t = timers.splice(i, 1)[0]; t.fn(); }
+  k8sTick();
   if (sim.now >= sim.nextEventAt) { fireEvent(); sim.nextEventAt = sim.now + rnd(1.3, 3); }
 }

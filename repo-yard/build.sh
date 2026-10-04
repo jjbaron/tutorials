@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
   echo '<script>'
   echo '(function () {'
   echo "if (!window.THREE) { document.getElementById('stage').insertAdjacentHTML('beforeend', '<div class=\"fatal\">The 3D library did not load. Check your connection and reload the page.</div>'); return; }"
-  cat src/data.js src/sim.js src/scene.js src/ui.js src/boot.js
+  cat src/data.js src/sim.js src/k8s.js src/scene.js src/kscene.js src/ui.js src/kui.js src/boot.js
   echo '})();'
   echo '</script></body></html>'
 } > index.html

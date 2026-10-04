@@ -23,7 +23,10 @@ const ICON = {
   prod: svg('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2.2 2 2.2 10 0 12M8 2c-2.2 2-2.2 10 0 12"/>'),
   pause: svg('<path d="M5.5 3.5v9M10.5 3.5v9"/>'),
   play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6L13 8z" fill="currentColor"/></svg>',
-  wait: svg('<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>')
+  wait: svg('<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>'),
+  rollout: svg('<rect x="1.5" y="5" width="5.5" height="7" rx=".8"/><rect x="9" y="5" width="5.5" height="7" rx=".8"/><path d="M5 2.5h6M9.5 1l1.5 1.5L9.5 4"/>'),
+  scale: svg('<rect x="2" y="9" width="3" height="5" rx=".6"/><rect x="6.5" y="6" width="3" height="8" rx=".6"/><rect x="11" y="2.5" width="3" height="11.5" rx=".6"/>'),
+  rollback: svg('<path d="M3.5 6.5h7a3 3 0 0 1 0 6H6"/><path d="M6 3.5l-3 3 3 3"/>')
 };
 
 const ui = { dirty: true, lastRender: 0, holdSide: false };
@@ -31,6 +34,12 @@ function curRepo() { return state.view.mode === 'repo' ? state.byId[state.view.r
 
 /* ---------- top bar ---------- */
 function renderCrumbs() {
+  document.querySelectorAll('#view-seg button').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.action === 'view-k8s') === (state.view.mode === 'cluster'))));
+  if (state.view.mode === 'cluster') {
+    const d = state.selectedDep && k8s.deps.find(x => x.id === state.selectedDep);
+    $('#crumbs').innerHTML = d ? `<button data-action="select-dep" data-id="">All deployments</button><span class="sep">/</span><span class="here">${esc(d.name)} · ${envName(d.env)}</span>` : `<span class="here">Clusters</span>`;
+    return;
+  }
   const r = curRepo();
   $('#crumbs').innerHTML = r
     ? `<button data-action="town">All repos</button><span class="sep">/</span><span class="here">${esc(r.id)}</span>`
@@ -49,6 +58,7 @@ function renderClock() { const s = fmtClock(sim.now); if (s !== lastClock) { $('
 /* ---------- KPI cards ---------- */
 function kpi(label, val, sub, alert) { return `<div class="kpi${alert ? ' alert' : ''}"><div class="k-label">${label}</div><div class="k-val">${val}</div><div class="k-sub">${sub}</div></div>`; }
 function renderKpis() {
+  if (state.view.mode === 'cluster') { $('#kpis').innerHTML = k8sKpis(); return; }
   const r = curRepo();
   const repos = r ? [r] : state.repos;
   const active = sum(repos.map(x => x.branches.filter(isActive).length));
@@ -72,7 +82,10 @@ function renderKpis() {
 /* ---------- layer chips + legend ---------- */
 function renderLayers() {
   const el = $('#layers');
-  if (curRepo()) {
+  if (state.view.mode === 'cluster') {
+    const envBtn = (k, n) => `<button class="chip-btn" data-action="k8s-env" data-id="${k}" aria-pressed="${state.k8sEnv === k}">${n}</button>`;
+    el.innerHTML = `<span class="l-title">Cluster</span>${envBtn('prod', 'Production')}${envBtn('staging', 'Staging')}${envBtn('both', 'Both')}<span class="divider"></span><span class="l-title">Group by</span><button class="chip-btn" data-action="k8s-layout" data-id="deployment" aria-pressed="${state.k8sLayout === 'deployment'}">Deployment</button><button class="chip-btn" data-action="k8s-layout" data-id="node" aria-pressed="${state.k8sLayout === 'node'}">Node</button>`;
+  } else if (curRepo()) {
     const L = [['structure', 'Structure'], ['activity', 'Live activity'], ['hotspots', 'Hotspots'], ['owners', 'Owners']];
     el.innerHTML = `<span class="l-title">Color by</span>${L.map(([k, n]) => `<button class="chip-btn" data-action="layer" data-id="${k}" aria-pressed="${state.layer === k}">${n}</button>`).join('')}<span class="divider"></span><button class="chip-btn" data-action="toggle-conflicts" aria-pressed="${state.showConflicts}"><span class="sw" style="color:var(--safety)"></span>Conflict arcs</button>`;
   } else {
@@ -83,6 +96,14 @@ function renderLayers() {
 function cssHex(n) { return '#' + n.toString(16).padStart(6, '0'); }
 function renderLegend() {
   const key = $('#legend-key'), body = $('#legend-body');
+  if (state.view.mode === 'cluster') {
+    const K = kp();
+    key.innerHTML = state.k8sLayout === 'node'
+      ? `<div><b>By node</b>: each bay is a node with room for ${SLOTS} pods; containers are colored by team.<div class="teams" style="margin-top:4px">${['payments', 'storefront', 'fulfillment', 'identity', 'data', 'platform'].map(id => `<span><i style="background:${teamColor(id)}"></i>${TEAMS[id].name}</span>`).join('')}</div></div>`
+      : `<div class="teams"><span><i style="background:${cssHex(K.cur)}"></i>current image</span><span><i style="background:${cssHex(K.old)}"></i>old image, being replaced</span><span><i style="background:${cssHex(K.crash)}"></i>CrashLoopBackOff</span></div>`;
+    body.innerHTML = `<div><b>Platform</b> = a cluster. Pick Both to see staging and production side by side.</div><div><b>Each container</b> is a pod. Faded and pulsing means starting; sinking means terminating.</div><div><b>Yellow gantry</b> = a rollout in progress. New pods start before old ones stop.</div><div><b>Yellow tape</b> around a node = cordoned and draining.</div><div><b>Truck</b> on the promotion lane = a release rolling out to production.</div>`;
+    return;
+  }
   if (curRepo()) {
     let k = '';
     if (state.layer === 'activity') k = `<div><b>Live activity</b>: files pushed to recently glow, cooling over about an hour.<div class="ramp" style="background:linear-gradient(90deg,${P.heat.map(cssHex).join(',')})"></div><div class="ramp-lbl"><span>quiet</span><span>being edited now</span></div></div>`;
@@ -102,7 +123,7 @@ function renderSide() {
   if (ui.holdSide) return;
   if (side.contains(document.activeElement) && document.activeElement !== side) { ui.pendingSide = true; return; }
   const r = curRepo();
-  side.innerHTML = r ? repoPanel(r) : townPanel();
+  side.innerHTML = state.view.mode === 'cluster' ? clusterPanel() : r ? repoPanel(r) : townPanel();
   ui.pendingSide = false;
 }
 function stat(l, v, cls) { return `<div class="stat ${cls || ''}"><div class="s-l">${l}</div><div class="s-v">${v}</div></div>`; }
@@ -161,6 +182,7 @@ function repoPanel(r) {
     ${stagedList.length ? `<div class="staged-list">${stagedList.map(c => `<div class="staged-item"><button class="sha${state.selectedSha === c.sha ? ' sel' : ''}" data-action="trace" data-id="${c.sha}">${c.sha}</button><span>#${c.pr} ${esc(c.msg)}</span></div>`).join('')}</div>` : '<div class="empty">Nothing waiting. main matches production.</div>'}
     <button class="btn primary" data-action="ship" ${readyN ? '' : 'disabled'}>Ship ${readyN || ''} to production</button>
   </section>
+  ${repoK8sSection(r)}
   <section>
     <h3>Review queues <span class="h-aside">pending reviews per person</span></h3>
     ${rq.length ? rq.map(q => `<div class="rq">${avatar(q.p, true)}<div><div class="rq-name">${esc(PEOPLE[q.p])}</div><div class="rq-sub">${q.prs.map(p => '#' + p.n).join(', ')} · oldest ${fmtWait(q.oldest)}</div></div>
@@ -247,8 +269,12 @@ function traceSteps(c) {
     if (!bd) S.push({ k: 'build', l: 'Build', s: 'queued', st: 'pending' });
     else S.push({ k: 'build', l: 'Build', s: `${esc(ciLabel(repo, bd.id))} ${bd.status === 'running' ? 'running' : bd.status === 'failed' ? 'failed, retrying' : `passed in ${Math.max(1, Math.round(bd.end - bd.start))}m`}`, st: bd.status === 'running' ? 'active' : bd.status === 'failed' ? 'failed' : 'done' });
     S.push({ k: 'image', l: 'Image', s: m.image ? `<span class="mono">sha-${m.sha}</span>` : 'after build', st: m.image ? 'done' : 'pending', mono: true });
-    S.push({ k: 'staging', l: 'Staging', s: m.staging ? `deployed ${fmtWhen(m.staging)}` : m.image ? 'deploying' : 'after image', st: m.staging ? 'done' : m.image ? 'active' : 'pending' });
-    S.push({ k: 'prod', l: 'Production', s: m.prod ? `v${esc(m.prodVersion)} · ${fmtWhen(m.prod)}` : m.staging ? 'waiting for the next release' : 'after staging', st: m.prod ? 'done' : m.staging ? 'blocked' : 'pending' });
+    const sd = depFor('staging', repo.id), pd = depFor('prod', repo.id);
+    const sRoll = sd && sd.rollout && sd.rollout.target === 'sha-' + m.sha ? sd.rollout : null;
+    const podsAt = (d, v) => d.pods.filter(p => p.version === v && p.status === 'Running').length;
+    S.push({ k: 'staging', l: 'Staging', s: m.staging ? `deployed ${fmtWhen(m.staging)}` : sRoll ? (sRoll.stalled ? 'rollout stuck: pods crashing' : `rolling out · ${podsAt(sd, sRoll.target)}/${sd.desired} pods`) : m.image ? 'deploying' : 'after image', st: m.staging ? 'done' : sRoll && sRoll.stalled ? 'failed' : m.image ? 'active' : 'pending' });
+    const rolling = !m.prod && m.prodVersion;
+    S.push({ k: 'prod', l: 'Production', s: m.prod ? `v${esc(m.prodVersion)} · ${fmtWhen(m.prod)}` : rolling ? `rolling out v${esc(m.prodVersion)}${pd ? ` · ${podsAt(pd, m.prodVersion)}/${pd.desired} pods` : ''}` : m.staging ? 'waiting for the next release' : 'after staging', st: m.prod ? 'done' : rolling ? 'active' : m.staging ? 'blocked' : 'pending' });
   } else {
     if (!pr) S.push({ k: 'pr', l: 'Pull request', s: b ? 'not opened yet' : 'branch was deleted', st: b ? 'blocked' : 'pending' });
     else S.push({ k: 'pr', l: 'Pull request', s: `#${pr.n} ${pr.state === 'draft' ? 'draft' : 'open'}`, st: pr.state === 'draft' ? 'blocked' : 'done' });
