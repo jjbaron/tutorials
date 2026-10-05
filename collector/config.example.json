@@ -1,0 +1,37 @@
+// Repo Yard collector config. Copy to config.json and edit.
+// Fastest way to fill it in: run `node scripts/discover.mjs --repos-dir <folder with your clones>` from the
+// project root; it writes config.draft.json with your clusters, namespaces and deployments.
+// Secrets do NOT go here: put GITHUB_TOKEN, JENKINS_USER and JENKINS_TOKEN in collector/.env (see .env.example).
+{
+  "port": 7777,
+  "github": {
+    // github.com organization that owns the repos (repos can override with "fullName": "owner/repo")
+    "org": "YOUR-GITHUB-ORG",
+    "tokenEnv": "GITHUB_TOKEN",
+    // release branches are named like release/26.10.05.REL
+    "releaseBranchPattern": "^release/(?<yy>\\d{2})\\.(?<mm>\\d{2})\\.(?<dd>\\d{2})\\.REL$"
+  },
+  "jenkins": {
+    "url": "https://YOUR-JENKINS-HOST",
+    "userEnv": "JENKINS_USER",
+    "tokenEnv": "JENKINS_TOKEN",
+    // Running images are tagged dev-latest<uuid>[-release-yy-mm-dd-REL]. The uuid is not a commit, so the
+    // collector searches recent Jenkins console logs for the tag to find the build, then that build's commit.
+    // Turn this off once deployments carry the repo-yard/commit annotation (see HANDOFF.md).
+    "searchConsoleForTags": true
+  },
+  "kubernetes": {
+    "kubectl": "kubectl",
+    // Uses your kubectl contexts (az aks get-credentials ...). Exactly one environment is production.
+    "environments": [
+      { "name": "dev",  "label": "Dev",        "context": "YOUR-DEV-CONTEXT",  "namespaces": ["YOUR-DEV-NAMESPACE"] },
+      { "name": "prod", "label": "Production", "context": "YOUR-PROD-CONTEXT", "namespaces": ["YOUR-PROD-NAMESPACE"], "production": true }
+    ]
+  },
+  "repos": [
+    // name: GitHub repo name. jenkinsJob: job path as in the Jenkins URL (folder/job for jobs in folders).
+    // deployment / image: Kubernetes Deployment name and image name, when they differ from the repo name.
+    // ci: "jenkins", "actions" or "auto" (auto-detects from recent runs).
+    { "name": "payments-api", "team": "payments", "jenkinsJob": "payments-api", "deployment": "payments-api", "image": "payments-api", "ci": "auto" }
+  ]
+}

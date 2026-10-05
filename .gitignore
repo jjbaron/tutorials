@@ -1,0 +1,8 @@
+node_modules/
+collector/config.json
+collector/.env
+collector/snapshot.json
+config.draft.json
+discovery-report.md
+*.log
+.DS_Store

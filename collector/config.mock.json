@@ -1,0 +1,19 @@
+// Config for the mock world (npm run demo). Mirrors the shape of a real config.
+{
+  "port": 7777,
+  "pollSeconds": { "github": 20, "jenkins": 10, "kubernetes": 5 },
+  "github": { "apiUrl": "http://127.0.0.1:7788/gh", "org": "acme", "tokenEnv": "MOCK_GITHUB_TOKEN" },
+  "jenkins": { "url": "http://127.0.0.1:7788/jenkins", "userEnv": "MOCK_JENKINS_USER", "tokenEnv": "MOCK_JENKINS_TOKEN" },
+  "kubernetes": {
+    "kubectl": ["node", "dev/fake-kubectl.mjs"],
+    "environments": [
+      { "name": "dev", "label": "Dev", "context": "aks-dev" },
+      { "name": "prod", "label": "Production", "context": "aks-prod", "production": true }
+    ]
+  },
+  "repos": [
+    { "name": "payments-api", "team": "payments", "jenkinsJob": "payments-api" },
+    { "name": "checkout-web", "team": "storefront", "ci": "actions" },
+    { "name": "inventory-svc", "team": "fulfillment", "jenkinsJob": "inventory-svc" }
+  ]
+}

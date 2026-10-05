@@ -1,0 +1,16 @@
+{
+  "name": "repo-yard-collector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Collects GitHub, Jenkins/GitHub Actions and AKS state for the Repo Yard page",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js run --config config.json",
+    "once": "node src/index.js once --config config.json",
+    "doctor": "node src/index.js doctor --config config.json",
+    "mock": "node dev/mock-world.mjs",
+    "demo": "node dev/demo.mjs",
+    "test": "node --test"
+  }
+}
